@@ -57,10 +57,14 @@ func New(opts Options) *Server {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(opts.Timeout))
+	r.Use(nosniff)
 	r.Use(s.logRequests)
 
 	r.Get("/healthz", s.handleLiveness)
 	r.Route("/v1", func(r chi.Router) {
+		// Answers reflect live on-chain state, so they must not be replayed
+		// from a shared or intermediary cache.
+		r.Use(noStore)
 		r.Post("/simulate", s.handleSimulate)
 		r.Get("/inspect/{contract}", s.handleInspect)
 		r.Get("/check/{contract}", s.handleCheck)
@@ -103,6 +107,26 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.log.Info("shutting down http api")
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+// nosniff stops a browser from reinterpreting a response as a type it did not
+// ask for. The API only serves JSON, so a response rendered directly as HTML
+// would be a sniffing bug, not a feature.
+func nosniff(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
+// noStore marks a response as uncacheable. The /v1 answers mirror live chain
+// state and a health result is only meaningful at the moment it was asked for,
+// so an intermediary must not serve a stale copy.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) logRequests(next http.Handler) http.Handler {

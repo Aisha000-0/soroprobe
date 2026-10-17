@@ -454,6 +454,15 @@ A contract that fails its check still returns **200**: the request succeeded, it
 just carries bad news. Returning 5xx would conflate an unhealthy contract with a
 broken service, and monitoring cannot tell those apart after the fact.
 
+### Response headers
+
+Every response carries `X-Content-Type-Options: nosniff`, so a browser that is
+pointed at the API cannot be tricked into interpreting a JSON body as HTML.
+
+Routes under `/v1` also carry `Cache-Control: no-store`: their answers describe
+live on-chain state, and a cached health result would be worse than no result.
+`/healthz` is exempt — it holds no chain state and is meant to be polled cheaply.
+
 ## Configuration
 
 Precedence, lowest to highest: **defaults → config file → environment → flags**.

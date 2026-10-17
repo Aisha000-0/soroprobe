@@ -351,3 +351,61 @@ func TestChecksEndpointBadRequests(t *testing.T) {
 		assert.Equal(t, http.StatusBadRequest, rec.Code, "%s: %s", name, rec.Body.String())
 	}
 }
+
+func TestSecurityHeadersOnEveryRoute(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	// Body-carrying routes need a valid payload to reach their handler, but the
+	// headers are written by middleware before the handler runs, so any status
+	// proves they are present. Every route the router serves is listed here.
+	routes := []struct {
+		method string
+		target string
+		body   string
+	}{
+		{http.MethodGet, "/healthz", ""},
+		{http.MethodPost, "/v1/simulate",
+			`{"contract_id":"` + stellartest.SACContract + `","function":"decimals"}`},
+		{http.MethodGet, "/v1/inspect/" + stellartest.SACContract, ""},
+		{http.MethodGet, "/v1/check/" + stellartest.SACContract + "?fn=decimals", ""},
+		{http.MethodPost, "/v1/checks",
+			`{"checks":[{"name":"c","contract_id":"` + stellartest.SACContract + `","function":"decimals"}]}`},
+	}
+
+	for _, rt := range routes {
+		rec := do(t, h, rt.method, rt.target, rt.body, nil)
+		assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"), rt.target)
+	}
+}
+
+func TestSecurityHeadersOnUnknownRoute(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	// A 404 is still a response from this server, so it carries the headers too.
+	rec := do(t, h, http.MethodGet, "/does-not-exist", "", nil)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+}
+
+func TestVersionedRoutesAreNotCached(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	for _, target := range []string{
+		"/v1/inspect/" + stellartest.SACContract,
+		"/v1/check/" + stellartest.SACContract + "?fn=decimals",
+	} {
+		rec := do(t, h, http.MethodGet, target, "", nil)
+		assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"), target)
+	}
+
+	// The liveness probe carries no chain state and is meant to be polled
+	// cheaply, so it stays out of the no-store rule.
+	rec := do(t, h, http.MethodGet, "/healthz", "", nil)
+	assert.Empty(t, rec.Header().Get("Cache-Control"))
+}
