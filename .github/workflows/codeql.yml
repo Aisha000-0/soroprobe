@@ -1,0 +1,50 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The query packs and the Go toolchain both move between our commits, so
+  # re-scan weekly even when nothing has been pushed. The minute is offset
+  # from security.yml's weekly run so the two do not start together.
+  schedule:
+    - cron: "41 4 * * 1"
+
+# The workflow itself only reads the repository; the analysis job asks for the
+# one extra scope it needs on top of this.
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze Go
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to publish the findings to code scanning.
+      security-events: write
+      # GitHub's template also grants `actions: read` and `packages: read`;
+      # both are only needed for private repositories, so they are left out.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache: true
+          # Always the newest patch release: security fixes land there.
+          check-latest: true
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: go
+          # The default suite reports the higher-severity rules only; the
+          # extended set runs the rest of the security queries, which is the
+          # point of scanning a decoder for untrusted network responses.
+          queries: security-extended
+
+      # SoroProbe is a plain Go module, so the action's own build detection is
+      # enough; this runs `go build ./...` and then the analysis.
+      - uses: github/codeql-action/autobuild@v4
+
+      - uses: github/codeql-action/analyze@v4
