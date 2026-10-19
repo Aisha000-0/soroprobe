@@ -21,9 +21,15 @@ RUN apk add --no-cache ca-certificates \
 
 COPY --from=build /out/soroprobe /usr/local/bin/soroprobe
 
+# SoroProbe now defaults to 127.0.0.1:8080, which would reach nothing inside a
+# container, so the image widens the listen address to every interface on
+# purpose. It is set through the environment rather than --addr so it still
+# applies when a caller replaces CMD with their own arguments.
+ENV HTTP_ADDR=:8080
+
 USER soroprobe
 EXPOSE 8080
 
 # SoroProbe is stateless and read-only; it holds no keys and writes no data.
 ENTRYPOINT ["soroprobe"]
-CMD ["serve", "--addr", ":8080"]
+CMD ["serve"]

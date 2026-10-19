@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +38,21 @@ func TestDefaultSourceAccountIsValid(t *testing.T) {
 	// the default placeholder still has to be a real strkey public key.
 	cfg := config.Default()
 	assert.Len(t, cfg.SourceAccount, 56)
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestDefaultHTTPAddrIsLoopback(t *testing.T) {
+	// SoroProbe is read-only, but an instance reachable from the network still
+	// spends the operator's RPC quota on whoever finds it, so the default
+	// serves the local machine only. Serving wider than that is deliberate:
+	// --addr 0.0.0.0:8080.
+	cfg := config.Default()
+	assert.Equal(t, "127.0.0.1:8080", cfg.HTTPAddr)
+
+	host, port, err := net.SplitHostPort(cfg.HTTPAddr)
+	require.NoError(t, err)
+	assert.Equal(t, "127.0.0.1", host)
+	assert.Equal(t, "8080", port)
 	assert.NoError(t, cfg.Validate())
 }
 

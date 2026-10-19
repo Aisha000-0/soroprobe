@@ -301,7 +301,8 @@ simulation step is honestly reported as `SKIP`.
 
 ### `soroprobe serve`
 
-Runs the HTTP API. `--addr` overrides `HTTP_ADDR`.
+Runs the HTTP API. It binds `127.0.0.1:8080` by default; `--addr` overrides
+`HTTP_ADDR`.
 
 ### Global flags
 
@@ -407,6 +408,18 @@ worse than a quoted string. Bytes become hex; addresses become strkey.
 `soroprobe serve` exposes the CLI over HTTP for CI systems and other services.
 It is read-only; there is no route that submits anything.
 
+**It listens on `127.0.0.1:8080` by default.** SoroProbe is read-only, but an
+instance reachable from the network still spends the operator's RPC quota on
+whichever RPC endpoint it is pointed at, so serving wider than the local
+machine is an opt-in. Widen the address deliberately:
+
+```bash
+soroprobe serve --addr 0.0.0.0:8080      # or HTTP_ADDR=0.0.0.0:8080
+```
+
+The Docker image sets `HTTP_ADDR=:8080` itself, since loopback inside a
+container would reach nothing.
+
 ### `GET /healthz`
 
 Liveness. Deliberately does **not** call out to the network, so the probe does
@@ -472,7 +485,7 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `RPC_URL` | `--rpc-url` | `https://soroban-testnet.stellar.org` |
 | `NETWORK_PASSPHRASE` | `--network-passphrase` | `Test SDF Network ; September 2015` |
 | `SOURCE_ACCOUNT` | `--source-account` | all-zero placeholder |
-| `HTTP_ADDR` | `--addr` (on `serve`) | `:8080` |
+| `HTTP_ADDR` | `--addr` (on `serve`) | `127.0.0.1:8080` |
 | `LOG_LEVEL` | `--log-level` | `info` |
 | `RPC_TIMEOUT` | `--timeout` | `30s` |
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |

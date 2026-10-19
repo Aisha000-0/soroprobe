@@ -25,9 +25,14 @@ import (
 const (
 	DefaultRPCURL            = "https://soroban-testnet.stellar.org"
 	DefaultNetworkPassphrase = network.TestNetworkPassphrase
-	DefaultHTTPAddr          = ":8080"
-	DefaultLogLevel          = "info"
-	DefaultTimeout           = 30 * time.Second
+	// DefaultHTTPAddr is loopback on purpose. SoroProbe is read-only, but an
+	// instance reachable from the network still spends the operator's RPC
+	// quota on whoever finds it, so serving wider than the local machine is an
+	// opt-in rather than the default. The Docker image widens it, because
+	// loopback inside a container would reach nothing.
+	DefaultHTTPAddr = "127.0.0.1:8080"
+	DefaultLogLevel = "info"
+	DefaultTimeout  = 30 * time.Second
 
 	// DefaultSourceAccount is the all-zero ed25519 account ID. Simulation reads
 	// the source account but never needs it to exist, be funded, or sign

@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/soroworks/soroprobe/internal/config"
 	"github.com/soroworks/soroprobe/internal/probe"
 )
 
@@ -31,7 +32,8 @@ type Server struct {
 type Options struct {
 	// Prober runs the probes. Required.
 	Prober *probe.Prober
-	// Addr is the listen address. Defaults to ":8080".
+	// Addr is the listen address. Defaults to config.DefaultHTTPAddr, which is
+	// loopback: see the comment on that constant.
 	Addr string
 	// Logger receives request logs. Defaults to a discarding logger.
 	Logger *slog.Logger
@@ -42,7 +44,7 @@ type Options struct {
 // New builds a Server with its routes mounted.
 func New(opts Options) *Server {
 	if opts.Addr == "" {
-		opts.Addr = ":8080"
+		opts.Addr = config.DefaultHTTPAddr
 	}
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
