@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -293,7 +294,7 @@ func TestReadBatch(t *testing.T) {
 	t.Parallel()
 
 	req, err := readBatch(strings.NewReader(`{"checks": [
-		{"name": "token", "contract_id": "CDLZ", "function": "decimals", "args": ["u32:1"]},
+		{"name": "token", "contract_id": "CDLZ", "function": "decimals", "args": ["u32:1"], "timeout": "15s"},
 		{"contract_id": "CDEF", "data_keys": ["sym:Admin"], "data_durability": "temporary"}
 	]}`), "-")
 	require.NoError(t, err)
@@ -301,6 +302,8 @@ func TestReadBatch(t *testing.T) {
 	assert.Equal(t, "token", req.Checks[0].Name)
 	assert.Equal(t, "decimals", req.Checks[0].Function)
 	assert.Equal(t, []string{"u32:1"}, req.Checks[0].Args)
+	assert.Equal(t, "15s", req.Checks[0].Timeout)
+	assert.Empty(t, req.Checks[1].Timeout, "no timeout means no per-check limit")
 	assert.Equal(t, []string{"sym:Admin"}, req.Checks[1].DataKeys)
 	assert.EqualValues(t, "temporary", req.Checks[1].DataDurability)
 
@@ -309,6 +312,23 @@ func TestReadBatch(t *testing.T) {
 	_, err = readBatch(strings.NewReader(`{"checks": [{"contract_id": "CDLZ", "fn": "decimals"}]}`), "-")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown field "fn"`)
+}
+
+func TestApplyDefaultTimeout(t *testing.T) {
+	t.Parallel()
+
+	req := probe.BatchRequest{Checks: []probe.NamedCheck{
+		{Name: "keeps", Timeout: "2s"},
+		{Name: "fills"},
+	}}
+	applyDefaultTimeout(&req, 30*time.Second)
+	assert.Equal(t, "2s", req.Checks[0].Timeout, "a per-entry timeout wins over the flag")
+	assert.Equal(t, "30s", req.Checks[1].Timeout)
+
+	// Without the flag there is no default, and entries stay unbounded.
+	req = probe.BatchRequest{Checks: []probe.NamedCheck{{Name: "unbounded"}}}
+	applyDefaultTimeout(&req, 0)
+	assert.Empty(t, req.Checks[0].Timeout)
 }
 
 func TestRenderBatch(t *testing.T) {

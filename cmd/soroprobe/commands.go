@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -131,6 +132,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var dataKeys []string
 	var durability string
 	var file string
+	var checkTimeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "check <contract-id> | check --file <checks.json>",
@@ -154,9 +156,12 @@ reported as skipped unless a function is named.
     {"name": "vault", "contract_id": "C...", "data_keys": ["sym:Admin"]}
   ]}
 
-Each entry takes name, contract_id, function, args, data_keys and
-data_durability — the same body POST /v1/checks accepts. With --file, the exit
-code is 2 if any check could not run, else 1 if any failed, else 0.`,
+Each entry takes name, contract_id, function, args, data_keys, data_durability
+and timeout — the same body POST /v1/checks accepts. timeout bounds a single
+check, as a Go duration string ("45s"); a check that outlives it is reported as
+one that could not run, and the batch continues. --check-timeout supplies the
+default for entries that name none. With --file, the exit code is 2 if any
+check could not run, else 1 if any failed, else 0.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
 				if len(args) > 0 {
@@ -168,7 +173,7 @@ code is 2 if any check could not run, else 1 if any failed, else 0.`,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
-				return runCheckFile(cmd, opts, file)
+				return runCheckFile(cmd, opts, file, checkTimeout)
 			}
 
 			d, err := parseDurability(durability)
@@ -215,15 +220,18 @@ code is 2 if any check could not run, else 1 if any failed, else 0.`,
 	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to include in the TTL check (repeatable)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run every check listed in this JSON file ("-" for stdin)`)
+	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
+		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
 	return cmd
 }
 
 // runCheckFile runs a batch of checks read from path.
-func runCheckFile(cmd *cobra.Command, opts *options, path string) error {
+func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration) error {
 	req, err := readBatch(cmd.InOrStdin(), path)
 	if err != nil {
 		return err
 	}
+	applyDefaultTimeout(&req, checkTimeout)
 
 	p, cleanup, err := opts.prober()
 	if err != nil {
@@ -255,6 +263,20 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string) error {
 		return &checkFailedError{msg: "one or more checks failed"}
 	}
 	return nil
+}
+
+// applyDefaultTimeout fills entries that name no timeout of their own with the
+// --check-timeout default. A per-entry value always wins, so a batch can give
+// one slow contract a longer budget than the rest.
+func applyDefaultTimeout(req *probe.BatchRequest, d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	for i := range req.Checks {
+		if req.Checks[i].Timeout == "" {
+			req.Checks[i].Timeout = d.String()
+		}
+	}
 }
 
 // readBatch parses a check file. Unknown fields are rejected, so a typo such

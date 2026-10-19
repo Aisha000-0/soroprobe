@@ -285,11 +285,25 @@ result 1 passed, 1 failed, 0 could not run
 ```
 
 Each entry takes `name` (defaults to the contract ID, and must be unique),
-`contract_id`, `function`, `args`, `data_keys` and `data_durability`. Unknown
-keys are rejected, so a typo cannot silently drop a step. Checks run one after
-another, to stay inside public RPC rate limits; one that cannot run is
-reported and the rest continue. The exit code is 2 if any check could not
-run, else 1 if any failed, else 0.
+`contract_id`, `function`, `args`, `data_keys`, `data_durability` and `timeout`.
+Unknown keys are rejected, so a typo cannot silently drop a step. Checks run one
+after another, to stay inside public RPC rate limits; one that cannot run is
+reported and the rest continue. The exit code is 2 if any check could not run,
+else 1 if any failed, else 0.
+
+`timeout` bounds a single check, as a Go duration string (`"45s"`); a check that
+outlives it is reported as one that could not run, and the batch continues.
+`--check-timeout` sets the default for entries that name none — a per-entry
+`timeout` always wins — so one slow contract cannot eat the whole CI step:
+
+```json
+{"checks": [
+  {"name": "token", "contract_id": "CDLZ…", "function": "decimals", "timeout": "10s"},
+  {"name": "vault", "contract_id": "CCLV…", "data_keys": ["sym:Admin"]}
+]}
+```
+
+With `--check-timeout 30s`, `token` is still bounded at 10s and `vault` at 30s.
 
 A **TTL warning does not fail the check.** It is a signal to extend the entry,
 not a reason to break a build. Only `critical`, `expired` and `missing` fail.
@@ -450,9 +464,10 @@ Query parameters: `fn`, `arg` (repeatable), `key` (repeatable), `durability`.
 ### `POST /v1/checks`
 
 Several checks in one request — the same body `soroprobe check --file` reads.
-Returns `ok`, `errored`, and one item per check. Limited to 20 checks per
-request, because the request shares one deadline and checks run
-sequentially; split larger batches or use the CLI.
+Returns `ok`, `errored`, and one item per check. Each entry may set `timeout`
+(a Go duration string) to bound that check alone; it defaults to none. Limited
+to 20 checks per request, because the request shares one deadline and checks
+run sequentially; split larger batches or use the CLI.
 
 ### Status codes
 
