@@ -96,6 +96,17 @@ docker build -t soroprobe .
 docker run --rm soroprobe inspect CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
 ```
 
+Or run the HTTP API with Docker Compose, which builds the image and serves on
+`localhost:8080`:
+
+```bash
+docker compose up
+```
+
+`RPC_URL`, `NETWORK_PASSPHRASE` and `SOROVAULT_URL` are passed through from
+the environment (or a `.env` file); the defaults target the public testnet, so
+the stack comes up with no configuration at all.
+
 If your local Go is older than 1.25, nothing needs to change: `GOTOOLCHAIN=auto`
 is Go's default and will fetch the right toolchain on first build.
 
