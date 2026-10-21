@@ -10,6 +10,7 @@
       "url": "/"
     }
   ],
+  "security": [],
   "paths": {
     "/healthz": {
       "get": {
