@@ -299,6 +299,16 @@ Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, any `data_ttl`, the
 1 and 2 are kept distinct so a pipeline can tell "your contract is unhealthy"
 from "the tool broke".
 
+**GitHub Actions annotations.** Inside a workflow (`GITHUB_ACTIONS` is set)
+every failed or warned step also prints a workflow command, which GitHub shows
+on the run summary instead of burying it in the log:
+
+```
+::error title=soroprobe CDLZ…%3A code_ttl::expired at ledger 4038543
+```
+
+`--json` suppresses annotations, since its consumer parses the document.
+
 **Checking many contracts at once.** `--file` runs every check listed in a
 JSON file (`-` reads stdin), so one CI step can cover a whole deployment:
 

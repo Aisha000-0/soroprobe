@@ -211,7 +211,11 @@ check could not run, else 1 if any failed, else 0.
 
 --report writes the JSON result to a file while the text report still goes to
 the terminal, so a CI run can keep readable logs and a machine-readable
-artifact. The file is written even when the check fails.`,
+artifact. The file is written even when the check fails.
+
+Inside GitHub Actions (GITHUB_ACTIONS is set) each failed or warned step also
+prints an ::error:: or ::warning:: line, which surfaces on the run summary
+instead of hiding in the log. --json suppresses them.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
 				if len(args) > 0 {
@@ -278,6 +282,12 @@ artifact. The file is written even when the check fails.`,
 				return err
 			}
 
+			// Annotations go to stdout, the stream a step's log reads. They
+			// stay off under --json, whose consumer parses the document.
+			if !opts.jsonOut {
+				emitCheckAnnotations(out, result, inGitHubActions())
+			}
+
 			if !result.OK {
 				return &checkFailedError{msg: fmt.Sprintf("check failed for %s", args[0])}
 			}
@@ -332,6 +342,12 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout t
 		return err
 	}
 
+	// Annotations go to stdout, the stream a step's log reads. They stay off
+	// under --json, whose consumer parses the document.
+	if !opts.jsonOut {
+		emitBatchAnnotations(out, result, inGitHubActions())
+	}
+
 	switch {
 	case result.Errored:
 		// Returned as a plain error, so main exits with exitRuntime: the
@@ -377,6 +393,14 @@ func readBatch(stdin io.Reader, path string) (probe.BatchRequest, error) {
 		return probe.BatchRequest{}, fmt.Errorf("read check file %s: %w", path, err)
 	}
 	return req, nil
+}
+
+// inGitHubActions reports whether GitHub Actions sets the marker variable.
+// Only its presence matters: a step may set GITHUB_ACTIONS=false and still
+// expect workflow commands to work.
+func inGitHubActions() bool {
+	_, ok := os.LookupEnv(annotationEnv)
+	return ok
 }
 
 func newServeCmd(opts *options) *cobra.Command {
