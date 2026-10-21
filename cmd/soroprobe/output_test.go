@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -351,6 +352,28 @@ func TestReadBatch(t *testing.T) {
 	_, err = readBatch(strings.NewReader(`{"checks": [{"contract_id": "CDLZ", "fn": "decimals"}]}`), "-")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `unknown field "fn"`)
+}
+
+func TestReadYAMLBatchMatchesJSONAndRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	path := t.TempDir() + "/checks.yaml"
+	yaml := []byte("checks:\n  - name: token\n    contract_id: CDLZ\n    function: decimals\n    args: [u32:1]\n    data_keys: [sym:Admin]\n")
+	require.NoError(t, os.WriteFile(path, yaml, 0600))
+	req, err := readBatch(strings.NewReader(""), path)
+	require.NoError(t, err)
+	require.Len(t, req.Checks, 1)
+	assert.Equal(t, "token", req.Checks[0].Name)
+	assert.Equal(t, "CDLZ", req.Checks[0].ContractID)
+	assert.Equal(t, "decimals", req.Checks[0].Function)
+	assert.Equal(t, []string{"u32:1"}, req.Checks[0].Args)
+	assert.Equal(t, []string{"sym:Admin"}, req.Checks[0].DataKeys)
+
+	path = t.TempDir() + "/checks.yml"
+	require.NoError(t, os.WriteFile(path, []byte("checks:\n  - contract_id: CDLZ\n    fn: decimals\n"), 0600))
+	_, err = readBatch(strings.NewReader(""), path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "field fn not found")
 }
 
 func TestApplyDefaultTimeout(t *testing.T) {

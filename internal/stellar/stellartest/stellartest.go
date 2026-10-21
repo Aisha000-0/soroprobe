@@ -15,6 +15,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
@@ -80,6 +81,8 @@ func LoadLatestLedger(t testing.TB) protocol.GetLatestLedgerResponse {
 //
 // The zero value is usable but returns nothing; prefer NewFake.
 type Fake struct {
+	mu sync.Mutex
+
 	// Entries maps a base64 LedgerKey to the entry stored at it. Keys absent
 	// from the map are reported as not found, exactly as RPC does.
 	Entries map[string]protocol.LedgerEntryResult
@@ -139,7 +142,9 @@ func NewFake(t testing.TB) *Fake {
 
 // SimulateTransaction implements stellar.Client.
 func (f *Fake) SimulateTransaction(_ context.Context, req protocol.SimulateTransactionRequest) (protocol.SimulateTransactionResponse, error) {
+	f.mu.Lock()
 	f.SimulateRequests = append(f.SimulateRequests, req)
+	f.mu.Unlock()
 	if f.SimulateErr != nil {
 		return protocol.SimulateTransactionResponse{}, f.SimulateErr
 	}
@@ -148,7 +153,9 @@ func (f *Fake) SimulateTransaction(_ context.Context, req protocol.SimulateTrans
 	if err != nil {
 		return protocol.SimulateTransactionResponse{}, err
 	}
+	f.mu.Lock()
 	f.Functions = append(f.Functions, fn)
+	f.mu.Unlock()
 
 	resp, ok := f.Simulations[fn]
 	if !ok {
@@ -162,7 +169,9 @@ func (f *Fake) SimulateTransaction(_ context.Context, req protocol.SimulateTrans
 
 // GetLedgerEntries implements stellar.Client.
 func (f *Fake) GetLedgerEntries(_ context.Context, req protocol.GetLedgerEntriesRequest) (protocol.GetLedgerEntriesResponse, error) {
+	f.mu.Lock()
 	f.EntryRequests = append(f.EntryRequests, req.Keys)
+	f.mu.Unlock()
 	if f.EntriesErr != nil {
 		return protocol.GetLedgerEntriesResponse{}, f.EntriesErr
 	}

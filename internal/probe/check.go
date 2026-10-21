@@ -16,7 +16,7 @@ import (
 // CheckRequest describes a combined health check.
 type CheckRequest struct {
 	// ContractID is the strkey contract address ("C...").
-	ContractID string `json:"contract_id"`
+	ContractID string `json:"contract_id" yaml:"contract_id"`
 	// Function, when set, names a read-only function to simulate as a
 	// liveness probe.
 	//
@@ -24,15 +24,16 @@ type CheckRequest struct {
 	// exported functions from the ledger, and inventing a name would produce a
 	// misleading failure, so the simulation step is reported as skipped rather
 	// than guessed at.
-	Function string `json:"function,omitempty"`
+	Function string `json:"function,omitempty" yaml:"function,omitempty"`
 	// Args are argument specifications for Function.
 	Args []string `json:"args,omitempty"`
 	// Expect is an optional argument specification for the expected return value.
 	Expect string `json:"expect,omitempty"`
+	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
 	// DataKeys are optional data entries to include in the TTL assessment.
-	DataKeys []string `json:"data_keys,omitempty"`
+	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
-	DataDurability health.Durability `json:"data_durability,omitempty"`
+	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.

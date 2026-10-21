@@ -22,6 +22,60 @@ type SimulateRequest struct {
 	Args []string `json:"args,omitempty"`
 }
 
+// NamedSimulation is one named invocation in a simulation batch.
+type NamedSimulation struct {
+	Name string `json:"name,omitempty"`
+	SimulateRequest
+}
+
+// SimulateBatchRequest is a list of invocations to simulate sequentially.
+type SimulateBatchRequest struct {
+	Calls []NamedSimulation `json:"calls"`
+}
+
+// SimulateBatchItem is the outcome of one simulation in a batch.
+type SimulateBatchItem struct {
+	Name   string          `json:"name"`
+	Result *SimulateResult `json:"result,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
+// SimulateBatchResult aggregates a batch of simulations.
+type SimulateBatchResult struct {
+	Items []SimulateBatchItem `json:"items"`
+}
+
+// SimulateBatch runs each invocation sequentially and records individual
+// errors so a bad call does not prevent the remaining calls from running.
+func (p *Prober) SimulateBatch(ctx context.Context, req SimulateBatchRequest) (*SimulateBatchResult, error) {
+	if len(req.Calls) == 0 {
+		return nil, fmt.Errorf("a simulation batch must contain at least one call")
+	}
+
+	result := &SimulateBatchResult{Items: make([]SimulateBatchItem, 0, len(req.Calls))}
+	for _, call := range req.Calls {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		name := call.Name
+		if name == "" {
+			name = call.ContractID
+		}
+		item := SimulateBatchItem{Name: name}
+		simulated, err := p.Simulate(ctx, call.SimulateRequest)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			item.Error = err.Error()
+		} else {
+			item.Result = simulated
+		}
+		result.Items = append(result.Items, item)
+	}
+	return result, nil
+}
+
 // SimulateResult is the outcome of a simulated invocation.
 type SimulateResult struct {
 	ContractID string   `json:"contract_id"`

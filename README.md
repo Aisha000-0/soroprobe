@@ -226,17 +226,24 @@ restoration; it does not perform one.
 
 ## CLI reference
 
-### `soroprobe simulate <contract-id> <function> [args...]`
+### `soroprobe simulate <contract-id> <function> [args...]` or `simulate --file <calls.json>`
 
 Builds an invocation, simulates it, and reports the outcome, decoded return
 value, resource cost and ledger footprint.
 
 | Flag | Description |
 | --- | --- |
+| `--file <path>` | Simulate named calls from a JSON file (`-` reads stdin). |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
 A call the contract rejects is **not** a tool error — it exits 0 and reports
 `FAILED` with the host's error text. Use `check` if you want a non-zero exit.
+
+`simulate --file` accepts a `calls` array containing `{name, contract_id,
+function, args}` entries. Calls run sequentially; a call that cannot run is
+reported and does not prevent later calls from running. Text output includes
+the name, success, a truncated return value, instructions and fee; `--json`
+returns the complete results. Unknown JSON fields are rejected.
 
 ### `soroprobe inspect <contract-id>`
 
@@ -310,7 +317,7 @@ on the run summary instead of burying it in the log:
 `--json` suppresses annotations, since its consumer parses the document.
 
 **Checking many contracts at once.** `--file` runs every check listed in a
-JSON file (`-` reads stdin), so one CI step can cover a whole deployment:
+JSON or YAML file (`-` reads stdin), so one CI step can cover a whole deployment:
 
 ```json
 {"checks": [
@@ -330,9 +337,11 @@ result 1 passed, 1 failed, 0 could not run
 Each entry takes `name` (defaults to the contract ID, and must be unique),
 `contract_id`, `function`, `args`, `data_keys`, `data_durability` and `timeout`.
 Unknown keys are rejected, so a typo cannot silently drop a step. Checks run one
-after another, to stay inside public RPC rate limits; one that cannot run is
-reported and the rest continue. The exit code is 2 if any check could not run,
-else 1 if any failed, else 0.
+at a time by default to stay inside public RPC rate limits; `--concurrency N`
+runs up to N checks at once for endpoints that allow it. Results remain in file
+order, and cancellation stops checks waiting to start. One check that cannot run
+is reported and the rest continue. The exit code is 2 if any check could not
+run, else 1 if any failed, else 0.
 
 `timeout` bounds a single check, as a Go duration string (`"45s"`); a check that
 outlives it is reported as one that could not run, and the batch continues.
@@ -477,6 +486,10 @@ soroprobe serve --addr 0.0.0.0:8080      # or HTTP_ADDR=0.0.0.0:8080
 The Docker image sets `HTTP_ADDR=:8080` itself, since loopback inside a
 container would reach nothing.
 
+Set `CORS_ORIGINS` to a comma-separated list of exact browser origins, such as
+`https://dashboard.example,https://admin.example`, to enable CORS. Unset means
+no CORS headers. Preflight requests are answered only for listed origins.
+
 ### `GET /healthz`
 
 Liveness. Deliberately does **not** call out to the network, so the probe does
@@ -544,6 +557,7 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `NETWORK_PASSPHRASE` | `--network-passphrase` | `Test SDF Network ; September 2015` |
 | `SOURCE_ACCOUNT` | `--source-account` | all-zero placeholder |
 | `HTTP_ADDR` | `--addr` (on `serve`) | `127.0.0.1:8080` |
+| `CORS_ORIGINS` | — | unset; no CORS headers |
 | `LOG_LEVEL` | `--log-level` | `info` |
 | `RPC_TIMEOUT` | `--timeout` | `30s` |
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |

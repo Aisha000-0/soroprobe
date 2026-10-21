@@ -188,6 +188,40 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	return bw.err
 }
 
+func renderSimulateBatch(w io.Writer, r *probe.SimulateBatchResult) error {
+	bw := &bufWriter{w: w}
+	bw.printf("%-24s %-8s %-48s %-14s %s\n", "NAME", "SUCCESS", "RETURN VALUE", "INSTRUCTIONS", "FEE")
+	for _, item := range r.Items {
+		if item.Error != "" {
+			bw.printf("%-24s %-8s %-48s %-14s %s\n", truncate(item.Name, 24), "error", truncate(item.Error, 48), "-", "-")
+			continue
+		}
+		value := item.Result.Error
+		if item.Result.ReturnValue != nil {
+			encoded, err := json.Marshal(item.Result.ReturnValue)
+			if err != nil {
+				return err
+			}
+			value = string(encoded)
+		}
+		if value == "" {
+			value = "(void)"
+		}
+		bw.printf("%-24s %-8t %-48s %-14d %s\n",
+			truncate(item.Name, 24), item.Result.Success, truncate(value, 48),
+			item.Result.Cost.Instructions, stroops(item.Result.Cost.ResourceFee))
+	}
+	return bw.err
+}
+
+func truncate(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
 // indent prefixes every line of s, so multi-line RPC errors stay aligned.
 func indent(s, prefix string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
