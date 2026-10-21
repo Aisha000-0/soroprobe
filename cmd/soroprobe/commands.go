@@ -302,6 +302,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var checkTimeout time.Duration
 	var concurrency int
 	var reportPath string
+	var quiet bool
 
 	cmd := &cobra.Command{
 		Use:   "check <contract-id> | check --file <checks.json>",
@@ -341,9 +342,14 @@ check could not run, else 1 if any failed, else 0.
 the terminal, so a CI run can keep readable logs and a machine-readable
 artifact. The file is written even when the check fails.
 
+--quiet prints no report at all: success and check failure are told apart by
+the exit code alone. Errors that make SoroProbe itself fail (exit 2) still
+reach stderr, which is the point — redirecting stdout is what used to hide
+them. --quiet cannot be combined with --json or --report.
+
 Inside GitHub Actions (GITHUB_ACTIONS is set) each failed or warned step also
 prints an ::error:: or ::warning:: line, which surfaces on the run summary
-instead of hiding in the log. --json suppresses them.`,
+instead of hiding in the log. --json and --quiet suppress them.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
 				if len(args) > 0 {
@@ -357,6 +363,10 @@ instead of hiding in the log. --json suppresses them.`,
 			return cobra.ExactArgs(1)(cmd, args)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := checkQuietConflicts(quiet, opts.jsonOut, reportPath); err != nil {
+				return err
+			}
+
 			report, err := openReport(reportPath)
 			if err != nil {
 				return err
@@ -364,7 +374,7 @@ instead of hiding in the log. --json suppresses them.`,
 			defer report.close()
 
 			if file != "" {
-				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report)
+				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report, quiet)
 			}
 
 			d, err := parseDurability(durability)
@@ -400,21 +410,7 @@ instead of hiding in the log. --json suppresses them.`,
 				return err
 			}
 
-			out := cmd.OutOrStdout()
-			if opts.jsonOut {
-				err = writeJSON(out, result)
-			} else {
-				err = renderCheck(out, result)
-			}
-			if err != nil {
-				return err
-			}
-
-			// Annotations go to stdout, the stream a step's log reads. They
-			// stay off under --json, whose consumer parses the document.
-			if !opts.jsonOut {
-				emitCheckAnnotations(out, result, inGitHubActions())
-			}
+			emitSingleCheckOutput(cmd, opts, result, quiet)
 
 			if !result.OK {
 				return &checkFailedError{msg: fmt.Sprintf("check failed for %s", args[0])}
@@ -432,12 +428,14 @@ instead of hiding in the log. --json suppresses them.`,
 	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
 		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "maximum number of --file checks to run at once")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false,
+		"print no report; the exit code is the whole answer (errors still reach stderr)")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	return cmd
 }
 
 // runCheckFile runs a batch of checks read from path.
-func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, concurrency int, report *reportFile) error {
+func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, concurrency int, report *reportFile, quiet bool) error {
 	req, err := readBatch(cmd.InOrStdin(), path)
 	if err != nil {
 		return err
@@ -463,19 +461,21 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout t
 	}
 
 	out := cmd.OutOrStdout()
-	if opts.jsonOut {
-		err = writeJSON(out, result)
-	} else {
-		err = renderBatch(out, result)
-	}
-	if err != nil {
-		return err
-	}
+	if !quiet {
+		if opts.jsonOut {
+			err = writeJSON(out, result)
+		} else {
+			err = renderBatch(out, result)
+		}
+		if err != nil {
+			return err
+		}
 
-	// Annotations go to stdout, the stream a step's log reads. They stay off
-	// under --json, whose consumer parses the document.
-	if !opts.jsonOut {
-		emitBatchAnnotations(out, result, inGitHubActions())
+		// Annotations go to stdout, the stream a step's log reads. They stay
+		// off under --json, whose consumer parses the document.
+		if !opts.jsonOut {
+			emitBatchAnnotations(out, result, inGitHubActions())
+		}
 	}
 
 	switch {
@@ -485,6 +485,41 @@ func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout t
 		return fmt.Errorf("one or more checks could not be run")
 	case !result.OK:
 		return &checkFailedError{msg: "one or more checks failed"}
+	}
+	return nil
+}
+
+// emitSingleCheckOutput writes the text or JSON report for a single contract,
+// unless --quiet asked for none. Annotations are only emitted when a text
+// report was printed: --json consumers parse the document, and --quiet asked
+// for silence.
+func emitSingleCheckOutput(cmd *cobra.Command, opts *options, result *probe.CheckResult, quiet bool) error {
+	if quiet {
+		return nil
+	}
+	out := cmd.OutOrStdout()
+	if opts.jsonOut {
+		return writeJSON(out, result)
+	}
+	if err := renderCheck(out, result); err != nil {
+		return err
+	}
+	emitCheckAnnotations(out, result, inGitHubActions())
+	return nil
+}
+
+// checkQuietConflicts rejects flag combinations that contradict each other,
+// rather than silently letting one win. Exit-2 errors are printed by main, so
+// --quiet cannot swallow them.
+func checkQuietConflicts(quiet, jsonOut bool, reportPath string) error {
+	if !quiet {
+		return nil
+	}
+	switch {
+	case jsonOut:
+		return fmt.Errorf("--quiet prints no report, so it cannot be combined with --json")
+	case reportPath != "":
+		return fmt.Errorf("--report writes a JSON file while printing text as usual, so it cannot be combined with --quiet")
 	}
 	return nil
 }

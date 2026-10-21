@@ -381,6 +381,12 @@ on the run summary instead of burying it in the log:
 
 `--json` suppresses annotations, since its consumer parses the document.
 
+**Exit-code-only checks.** `--quiet` (`-q`) prints no report at all — success
+and check failure are told apart by the exit code alone. Errors that make
+SoroProbe itself fail (exit 2) still reach **stderr**, which is the point:
+`> /dev/null` used to hide them, and `--quiet` does not. `--quiet` cannot be
+combined with `--json` or `--report`.
+
 **Checking many contracts at once.** `--file` runs every check listed in a
 JSON or YAML file (`-` reads stdin), so one CI step can cover a whole deployment:
 
