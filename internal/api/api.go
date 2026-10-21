@@ -11,6 +11,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +27,20 @@ type Server struct {
 	addr   string
 	log    *slog.Logger
 	router chi.Router
+
+	// networkPassphrase is the network /readyz expects the RPC endpoint to
+	// serve.
+	networkPassphrase string
+	// readinessTTL bounds how long a /readyz result is reused before the
+	// RPC endpoint is probed again.
+	readinessTTL time.Duration
+	// ready* cache the last readiness result, so a chatty orchestrator does
+	// not multiply RPC traffic. A mutex guards the pair; it is never held
+	// across an RPC call.
+	readyMu  sync.Mutex
+	readyAt  time.Time
+	readyErr error
+	readySet bool
 }
 
 // Options configures a Server.
@@ -41,6 +56,13 @@ type Options struct {
 	CORSOrigins []string
 	// Timeout bounds a single request. Defaults to 60s.
 	Timeout time.Duration
+	// NetworkPassphrase is the network /readyz expects the RPC endpoint to
+	// serve; a healthy endpoint on another network is reported unready.
+	// Defaults to the testnet passphrase, matching the CLI's defaults.
+	NetworkPassphrase string
+	// ReadinessCacheTTL bounds how long a /readyz result is reused before
+	// the RPC endpoint is probed again. Defaults to 5s.
+	ReadinessCacheTTL time.Duration
 }
 
 // New builds a Server with its routes mounted.
@@ -54,8 +76,20 @@ func New(opts Options) *Server {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 60 * time.Second
 	}
+	if opts.NetworkPassphrase == "" {
+		opts.NetworkPassphrase = config.DefaultNetworkPassphrase
+	}
+	if opts.ReadinessCacheTTL <= 0 {
+		opts.ReadinessCacheTTL = 5 * time.Second
+	}
 
-	s := &Server{prober: opts.Prober, addr: opts.Addr, log: opts.Logger}
+	s := &Server{
+		prober:            opts.Prober,
+		addr:              opts.Addr,
+		log:               opts.Logger,
+		networkPassphrase: opts.NetworkPassphrase,
+		readinessTTL:      opts.ReadinessCacheTTL,
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -68,6 +102,7 @@ func New(opts Options) *Server {
 	}
 
 	r.Get("/healthz", s.handleLiveness)
+	r.Get("/readyz", s.handleReadiness)
 	r.Route("/v1", func(r chi.Router) {
 		// Answers reflect live on-chain state, so they must not be replayed
 		// from a shared or intermediary cache.

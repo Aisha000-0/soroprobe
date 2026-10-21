@@ -617,10 +617,11 @@ services. The API is read-only, exactly like the CLI.`,
 
 			log := opts.cfg.Logger(os.Stderr)
 			server := api.New(api.Options{
-				Prober:      p,
-				Addr:        opts.cfg.HTTPAddr,
-				Logger:      log,
-				CORSOrigins: opts.cfg.CORSOrigins,
+				Prober:            p,
+				Addr:              opts.cfg.HTTPAddr,
+				Logger:            log,
+				CORSOrigins:       opts.cfg.CORSOrigins,
+				NetworkPassphrase: opts.cfg.NetworkPassphrase,
 			})
 			return server.ListenAndServe(cmd.Context())
 		},

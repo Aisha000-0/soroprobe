@@ -603,6 +603,27 @@ not fail because an upstream RPC endpoint blipped.
 {"status": "ok"}
 ```
 
+### `GET /readyz`
+
+Readiness. Unlike `/healthz`, it calls the configured RPC endpoint: **200**
+when the endpoint reports healthy and serves the configured network
+passphrase, **503** with a JSON reason otherwise. An orchestrator uses it to
+take an instance out of rotation while its upstream is down, without
+restarting the process — which is exactly what `/healthz` must not do.
+
+```json
+{"status": "ready"}
+```
+
+```json
+{"status": "unready", "reason": "rpc unreachable: getHealth: connection refused"}
+```
+
+The result — success or failure — is cached for a few seconds, so a chatty
+orchestrator does not multiply RPC traffic. The cache is server-side only; the
+response itself is marked `Cache-Control: no-store`, because its answer
+describes live upstream state.
+
 ### `POST /v1/simulate`
 
 ```bash
@@ -656,6 +677,7 @@ run sequentially; split larger batches or use the CLI.
 | 400 | Bad input — malformed contract id, bad argument, unknown durability |
 | 404 | No such route |
 | 502 | Upstream RPC failed |
+| 503 | `/readyz` only: the RPC endpoint is unreachable, unhealthy, or on another network |
 
 A contract that fails its check still returns **200**: the request succeeded, it
 just carries bad news. Returning 5xx would conflate an unhealthy contract with a
@@ -666,9 +688,10 @@ broken service, and monitoring cannot tell those apart after the fact.
 Every response carries `X-Content-Type-Options: nosniff`, so a browser that is
 pointed at the API cannot be tricked into interpreting a JSON body as HTML.
 
-Routes under `/v1` also carry `Cache-Control: no-store`: their answers describe
-live on-chain state, and a cached health result would be worse than no result.
-`/healthz` is exempt — it holds no chain state and is meant to be polled cheaply.
+Routes under `/v1` — and `GET /readyz` — also carry `Cache-Control: no-store`:
+their answers describe live on-chain state, and a cached health result would
+be worse than no result. `/healthz` is exempt — it holds no chain state and is
+meant to be polled cheaply.
 
 ## Configuration
 

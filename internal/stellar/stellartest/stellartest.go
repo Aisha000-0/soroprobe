@@ -98,10 +98,23 @@ type Fake struct {
 	EntriesErr  error
 	LedgerErr   error
 
+	// HealthErr and NetworkErr inject getHealth and getNetwork failures.
+	HealthErr  error
+	NetworkErr error
+	// HealthStatus and NetworkPassphrase override what getHealth and
+	// getNetwork report. Empty keeps the default answer, so a Fake that
+	// leaves them alone behaves exactly as it always has.
+	HealthStatus      string
+	NetworkPassphrase string
+
 	// SimulateRequests and EntryRequests record what the code under test asked
 	// for, so tests can assert on the requests themselves.
 	SimulateRequests []protocol.SimulateTransactionRequest
 	EntryRequests    [][]string
+	// HealthRequests and NetworkRequests count readiness probes, so a test
+	// can assert that a cache kept them from multiplying.
+	HealthRequests  int
+	NetworkRequests int
 	// Functions records the decoded function name of each simulated call.
 	Functions []string
 }
@@ -198,12 +211,32 @@ func (f *Fake) GetLatestLedger(context.Context) (protocol.GetLatestLedgerRespons
 
 // GetNetwork implements stellar.Client.
 func (f *Fake) GetNetwork(context.Context) (protocol.GetNetworkResponse, error) {
-	return protocol.GetNetworkResponse{Passphrase: "Test SDF Network ; September 2015"}, nil
+	f.mu.Lock()
+	f.NetworkRequests++
+	f.mu.Unlock()
+	if f.NetworkErr != nil {
+		return protocol.GetNetworkResponse{}, f.NetworkErr
+	}
+	passphrase := f.NetworkPassphrase
+	if passphrase == "" {
+		passphrase = "Test SDF Network ; September 2015"
+	}
+	return protocol.GetNetworkResponse{Passphrase: passphrase}, nil
 }
 
 // GetHealth implements stellar.Client.
 func (f *Fake) GetHealth(context.Context) (protocol.GetHealthResponse, error) {
-	return protocol.GetHealthResponse{Status: "healthy", LatestLedger: f.LatestLedger}, nil
+	f.mu.Lock()
+	f.HealthRequests++
+	f.mu.Unlock()
+	if f.HealthErr != nil {
+		return protocol.GetHealthResponse{}, f.HealthErr
+	}
+	status := f.HealthStatus
+	if status == "" {
+		status = "healthy"
+	}
+	return protocol.GetHealthResponse{Status: status, LatestLedger: f.LatestLedger}, nil
 }
 
 // SetTTL overrides the liveUntilLedgerSeq of every stored entry belonging to a
