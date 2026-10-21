@@ -416,6 +416,30 @@ Prefer explicit prefixes. Bare integers infer `i128` because it is the widest
 common integer type in Soroban token interfaces, but a contract expecting `u32`
 will reject it with a confusing host error.
 
+**Named addresses.** A 56-character key repeated across commands is easy to
+get wrong by one character. Put names in the config file's `address_book` and
+write `addr:@alice` instead:
+
+```json
+{
+  "address_book": {
+    "alice": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    "token": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+  }
+}
+```
+
+```bash
+soroprobe simulate CDLZ... transfer addr:@alice addr:@token i128:100
+```
+
+A bare `@alice` is accepted too. Names may be written with or without the
+leading `@`. Every entry is validated when the config is loaded, and an unknown
+name is an error that lists the names that do exist. The resolved address
+appears in `encoded_args` (the `encoded` line in text output), so the report is
+never ambiguous. The same resolution applies to `check --fn/--arg`, check files
+and the HTTP API, because it happens in the shared probe path.
+
 ### Typing arguments from SoroVault
 
 Inference is a guess. If you run a [SoroVault](https://github.com/soroworks/sorovault)
@@ -565,7 +589,11 @@ A config file, by contrast, is read directly. It is JSON with snake_case keys:
 {
   "rpc_url": "https://soroban-testnet.stellar.org",
   "warn_ledgers": 120960,
-  "critical_ledgers": 17280
+  "critical_ledgers": 17280,
+  "address_book": {
+    "alice": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+    "token": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+  }
 }
 ```
 

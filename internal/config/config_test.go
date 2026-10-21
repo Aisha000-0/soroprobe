@@ -252,3 +252,37 @@ func TestParseLogLevel(t *testing.T) {
 	_, err := config.ParseLogLevel("chatty")
 	assert.Error(t, err)
 }
+
+func TestLoadAddressBook(t *testing.T) {
+	path := writeConfig(t, `{
+		"address_book": {
+			"alice": "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+			"token": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC"
+		}
+	}`)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.AddressBook, 2)
+	assert.Equal(t, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", cfg.AddressBook["alice"])
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestLoadRejectsInvalidAddressBookEntry(t *testing.T) {
+	// Validation happens at load time, so a bad key fails before any probe
+	// runs rather than on first use of that name.
+	path := writeConfig(t, `{"address_book": {"alice": "not-an-address"}}`)
+
+	_, err := config.Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid account")
+}
+
+func TestValidateRejectsInvalidAddressBookEntry(t *testing.T) {
+	cfg := config.Default()
+	cfg.AddressBook = map[string]string{"alice": "not-an-address"}
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid account")
+}

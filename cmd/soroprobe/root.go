@@ -11,6 +11,7 @@ import (
 	"github.com/soroworks/soroprobe/internal/config"
 	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/soroworks/soroprobe/internal/probe"
+	"github.com/soroworks/soroprobe/internal/scval"
 	"github.com/soroworks/soroprobe/internal/stellar"
 )
 
@@ -127,6 +128,12 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 		return nil, nil, err
 	}
 
+	book, err := scval.NewAddressBook(o.cfg.AddressBook)
+	if err != nil {
+		_ = client.Close()
+		return nil, nil, err
+	}
+
 	var source abi.Source
 	if o.cfg.SoroVaultURL != "" {
 		vault, err := abi.NewSoroVault(o.cfg.SoroVaultURL, nil, o.cfg.Timeout)
@@ -144,9 +151,10 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 			Warn:     o.cfg.WarnLedgers,
 			Critical: o.cfg.CriticalLedgers,
 		},
-		Logger:  log,
-		ABI:     source,
-		Network: abi.NetworkName(o.cfg.NetworkPassphrase),
+		Logger:      log,
+		ABI:         source,
+		Network:     abi.NetworkName(o.cfg.NetworkPassphrase),
+		AddressBook: book,
 	})
 	if err != nil {
 		_ = client.Close()

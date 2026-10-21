@@ -23,8 +23,9 @@ type Prober struct {
 	thresholds health.Thresholds
 	log        *slog.Logger
 
-	abi     abi.Source
-	network string
+	abi       abi.Source
+	network   string
+	addresses *scval.AddressBook
 }
 
 // Options configures a Prober.
@@ -48,6 +49,9 @@ type Options struct {
 	// Network is the label ABI lookups are filed under ("testnet",
 	// "public", ...). Only read when ABI is set.
 	Network string
+	// AddressBook resolves @name arguments to account or contract addresses.
+	// Defaults to an empty book, so unresolved names are reported clearly.
+	AddressBook *scval.AddressBook
 }
 
 // New builds a Prober.
@@ -67,6 +71,11 @@ func New(opts Options) (*Prober, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
+	if opts.AddressBook == nil {
+		// An empty book, not nil, so addr:@name outside any book still names
+		// the problem instead of failing deep inside address encoding.
+		opts.AddressBook, _ = scval.NewAddressBook(nil)
+	}
 	return &Prober{
 		client:     opts.Client,
 		codec:      opts.Codec,
@@ -75,6 +84,7 @@ func New(opts Options) (*Prober, error) {
 		log:        opts.Logger,
 		abi:        opts.ABI,
 		network:    opts.Network,
+		addresses:  opts.AddressBook,
 	}, nil
 }
 

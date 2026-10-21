@@ -18,6 +18,8 @@ import (
 
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/strkey"
+
+	"github.com/soroworks/soroprobe/internal/scval"
 )
 
 // Defaults. These target the public testnet so that a fresh checkout can run
@@ -84,6 +86,10 @@ type Config struct {
 	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
 	// interfaces type simulate arguments. Empty disables the lookup.
 	SoroVaultURL string `json:"sorovault_url"`
+	// AddressBook maps short names onto account (G...) and contract (C...)
+	// addresses, so arguments can be written addr:@name instead of repeating a
+	// 56-character key. Every entry is validated when the config is loaded.
+	AddressBook map[string]string `json:"address_book,omitempty"`
 }
 
 // Default returns a Config populated entirely from the package defaults.
@@ -103,15 +109,16 @@ func Default() Config {
 // fileConfig mirrors Config but with pointers, so that "absent" is
 // distinguishable from "set to the zero value".
 type fileConfig struct {
-	RPCURL            *string `json:"rpc_url"`
-	NetworkPassphrase *string `json:"network_passphrase"`
-	SourceAccount     *string `json:"source_account"`
-	HTTPAddr          *string `json:"http_addr"`
-	LogLevel          *string `json:"log_level"`
-	Timeout           *string `json:"timeout"`
-	WarnLedgers       *uint32 `json:"warn_ledgers"`
-	CriticalLedgers   *uint32 `json:"critical_ledgers"`
-	SoroVaultURL      *string `json:"sorovault_url"`
+	RPCURL            *string           `json:"rpc_url"`
+	NetworkPassphrase *string           `json:"network_passphrase"`
+	SourceAccount     *string           `json:"source_account"`
+	HTTPAddr          *string           `json:"http_addr"`
+	LogLevel          *string           `json:"log_level"`
+	Timeout           *string           `json:"timeout"`
+	WarnLedgers       *uint32           `json:"warn_ledgers"`
+	CriticalLedgers   *uint32           `json:"critical_ledgers"`
+	SoroVaultURL      *string           `json:"sorovault_url"`
+	AddressBook       map[string]string `json:"address_book"`
 }
 
 // Load builds a Config from defaults, then the config file at path (if
@@ -161,6 +168,14 @@ func applyFile(cfg *Config, path string, required bool) error {
 	setString(&cfg.HTTPAddr, fc.HTTPAddr)
 	setString(&cfg.LogLevel, fc.LogLevel)
 	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
+	if fc.AddressBook != nil {
+		// Validate now, not later: a malformed entry must fail the load rather
+		// than surface on the first use of that name.
+		if _, err := scval.NewAddressBook(fc.AddressBook); err != nil {
+			return fmt.Errorf("parse config file %s: %w", path, err)
+		}
+		cfg.AddressBook = fc.AddressBook
+	}
 	if fc.WarnLedgers != nil {
 		cfg.WarnLedgers = *fc.WarnLedgers
 	}
@@ -252,6 +267,9 @@ func (c Config) Validate() error {
 	if c.SoroVaultURL != "" &&
 		!strings.HasPrefix(c.SoroVaultURL, "http://") && !strings.HasPrefix(c.SoroVaultURL, "https://") {
 		return fmt.Errorf("sorovault url %q must start with http:// or https://", c.SoroVaultURL)
+	}
+	if _, err := scval.NewAddressBook(c.AddressBook); err != nil {
+		return err
 	}
 	return nil
 }

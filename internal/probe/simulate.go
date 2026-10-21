@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
 	"github.com/stellar/go-stellar-sdk/xdr"
@@ -76,7 +77,17 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		return nil, fmt.Errorf("a function name is required")
 	}
 
-	typed, err := p.typeArgs(ctx, req)
+	// Resolve address-book names before typing and encoding. Doing it here, in
+	// the one path every entry point shares, keeps the CLI, check files and
+	// HTTP API identical, and lets encoded_args report the concrete address.
+	resolved, err := p.resolveAddresses(req.Args)
+	if err != nil {
+		return nil, err
+	}
+
+	typeReq := req
+	typeReq.Args = resolved
+	typed, err := p.typeArgs(ctx, typeReq)
 	if err != nil {
 		return nil, err
 	}
@@ -109,10 +120,20 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 	}
 	result.Signature = typed.signature
 	result.ABINote = typed.note
-	if typed.changed {
+	// Report the arguments as they were actually encoded when resolution or
+	// interface typing changed them. Comparing against the request keeps a
+	// plain argument list silent, as before.
+	if !slices.Equal(typed.args, req.Args) {
 		result.EncodedArgs = typed.args
 	}
 	return result, nil
+}
+
+// resolveAddresses rewrites arguments that name address-book entries. It is a
+// no-op for ordinary arguments.
+func (p *Prober) resolveAddresses(specs []string) ([]string, error) {
+	resolved, _, err := p.addresses.ResolveAll(specs)
+	return resolved, err
 }
 
 // typedArgs is the outcome of typing a request's arguments.
@@ -120,7 +141,6 @@ type typedArgs struct {
 	args      []string
 	signature string
 	note      string
-	changed   bool
 }
 
 // typeArgs types req.Args from the contract's interface when an ABI source
@@ -169,12 +189,6 @@ func (p *Prober) typeArgs(ctx context.Context, req SimulateRequest) (typedArgs, 
 
 	out.args = args
 	out.signature = fn.Signature()
-	for i := range args {
-		if args[i] != req.Args[i] {
-			out.changed = true
-			break
-		}
-	}
 	return out, nil
 }
 

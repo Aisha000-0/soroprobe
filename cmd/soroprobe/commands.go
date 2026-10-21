@@ -39,7 +39,11 @@ of digits becomes i128, and anything else becomes a symbol if it fits Soroban's
 symbol rules or a string otherwise.
 
 Prefer explicit prefixes. A contract expecting u32 will fail confusingly if it
-is handed an inferred i128.`
+is handed an inferred i128.
+
+Addresses may be named in the config file's "address_book" map and written
+addr:@alice (or bare @alice). The resolved address is shown in the encoded
+arguments, so output stays unambiguous.`
 
 func newSimulateCmd(opts *options) *cobra.Command {
 	var reportPath string
