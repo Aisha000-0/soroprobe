@@ -125,6 +125,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		Args:           query["arg"],
 		DataKeys:       query["key"],
 		DataDurability: durability,
+		ExpectWasmHash: query.Get("expect_wasm_hash"),
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
@@ -155,6 +156,7 @@ func statusForError(err error) int {
 	switch {
 	case errors.Is(err, abi.ErrNoSuchFunction),
 		errors.Is(err, probe.ErrInvalidBatch),
+		errors.Is(err, probe.ErrInvalidWasmHash),
 		errors.Is(err, abi.ErrArgumentCount):
 		return http.StatusBadRequest
 	case strings.Contains(msg, "invalid contract id"),

@@ -283,10 +283,24 @@ Combined health check, designed for CI.
 | `--key <spec>` | A contract data key to include in the TTL check. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Combined with `--key`. |
 | `--durability <d>` | Durability for `--key` lookups. |
+| `--expect-wasm-hash <hash>` | Assert the contract runs exactly this wasm (64 hex chars). Adds a `wasm_hash` step. |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
-Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, any `data_ttl`, then
-`simulate`.
+Checks run in order: `deployed`, `wasm_hash` (when `--expect-wasm-hash` is
+given), `instance_ttl`, `code_ttl`, any `data_ttl`, then `simulate`.
+
+**Asserting which code runs.** After a deploy pipeline upgrades a contract, the
+most direct post-deploy check is that it now runs the expected code:
+
+```bash
+soroprobe check CCLV… --expect-wasm-hash 8608bb30bc798a058cc733e5873713b768b43cdb6cf71131614f3f5820b8e4f9
+```
+
+The `wasm_hash` step compares the hash against the one on the ledger and fails
+when the contract runs different code. The value is the wasm's sha256, in 64
+hex characters (case is ignored). A Stellar Asset Contract is implemented by
+the host and has no wasm, so the step fails with that explanation rather than a
+misleading pass.
 
 **Exit codes:**
 
@@ -328,7 +342,8 @@ result 1 passed, 1 failed, 0 could not run
 ```
 
 Each entry takes `name` (defaults to the contract ID, and must be unique),
-`contract_id`, `function`, `args`, `data_keys`, `data_durability` and `timeout`.
+`contract_id`, `function`, `args`, `data_keys`, `data_durability`,
+`expect_wasm_hash` and `timeout`.
 Unknown keys are rejected, so a typo cannot silently drop a step. Checks run one
 after another, to stay inside public RPC rate limits; one that cannot run is
 reported and the rest continue. The exit code is 2 if any check could not run,
@@ -502,7 +517,8 @@ Query parameters: `key` (repeatable), `durability`.
 
 ### `GET /v1/check/{contract}`
 
-Query parameters: `fn`, `arg` (repeatable), `key` (repeatable), `durability`.
+Query parameters: `fn`, `arg` (repeatable), `key` (repeatable), `durability`,
+`expect_wasm_hash` (64 hex characters; adds a `wasm_hash` step).
 
 ### `POST /v1/checks`
 

@@ -194,6 +194,11 @@ func validateBatch(req BatchRequest) error {
 		if _, err := c.checkTimeout(); err != nil {
 			return err
 		}
+		if c.ExpectWasmHash != "" {
+			if _, err := normalizeWasmHash(c.ExpectWasmHash); err != nil {
+				return fmt.Errorf("%w: check %q: %v", ErrInvalidBatch, checkName(c), err)
+			}
+		}
 		switch c.DataDurability {
 		case "", health.DurabilityPersistent, health.DurabilityTemporary:
 		default:

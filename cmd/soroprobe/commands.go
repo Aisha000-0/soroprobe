@@ -171,6 +171,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var dataKeys []string
 	var keyFile string
 	var durability string
+	var expectWasmHash string
 	var file string
 	var checkTimeout time.Duration
 	var reportPath string
@@ -190,6 +191,13 @@ extend the entry, not a reason to break a pipeline.
 guessing one would produce a misleading failure, so the simulation step is
 reported as skipped unless a function is named.
 
+--expect-wasm-hash asserts which code a contract runs — the post-deploy check
+after an upgrade. Give the 64 hex characters of the wasm's sha256 (case is
+ignored) and a wasm_hash step is added after deployed, failing when the contract
+runs anything else. A Stellar Asset Contract has no wasm, so the step fails with
+that explanation instead of a misleading pass. With --file it supplies the
+default for entries that name no expect_wasm_hash of their own.
+
 --key and --key-file name data entries for the TTL check. --key-file reads one
 spec per line from a file, ignoring blank lines and lines starting with #, and
 combines them with --key. It applies to the single-contract form; --file
@@ -202,12 +210,12 @@ entries carry their own data_keys.
     {"name": "vault", "contract_id": "C...", "data_keys": ["sym:Admin"]}
   ]}
 
-Each entry takes name, contract_id, function, args, data_keys, data_durability
-and timeout — the same body POST /v1/checks accepts. timeout bounds a single
-check, as a Go duration string ("45s"); a check that outlives it is reported as
-one that could not run, and the batch continues. --check-timeout supplies the
-default for entries that name none. With --file, the exit code is 2 if any
-check could not run, else 1 if any failed, else 0.
+Each entry takes name, contract_id, function, args, data_keys, data_durability,
+expect_wasm_hash and timeout — the same body POST /v1/checks accepts. timeout
+bounds a single check, as a Go duration string ("45s"); a check that outlives it
+is reported as one that could not run, and the batch continues. --check-timeout
+supplies the default for entries that name none. With --file, the exit code is
+2 if any check could not run, else 1 if any failed, else 0.
 
 --report writes the JSON result to a file while the text report still goes to
 the terminal, so a CI run can keep readable logs and a machine-readable
@@ -236,7 +244,7 @@ instead of hiding in the log. --json suppresses them.`,
 			defer report.close()
 
 			if file != "" {
-				return runCheckFile(cmd, opts, file, checkTimeout, report)
+				return runCheckFile(cmd, opts, file, checkTimeout, expectWasmHash, report)
 			}
 
 			d, err := parseDurability(durability)
@@ -261,6 +269,7 @@ instead of hiding in the log. --json suppresses them.`,
 				Args:           callArgs,
 				DataKeys:       keys,
 				DataDurability: d,
+				ExpectWasmHash: expectWasmHash,
 			})
 			if err != nil {
 				return err
@@ -300,6 +309,8 @@ instead of hiding in the log. --json suppresses them.`,
 	cmd.Flags().StringArrayVar(&dataKeys, "key", nil, "a contract data key to include in the TTL check (repeatable)")
 	cmd.Flags().StringVar(&keyFile, "key-file", "", "a file listing data keys for the TTL check, one spec per line (blank lines and # comments ignored)")
 	cmd.Flags().StringVar(&durability, "durability", "persistent", "durability for --key lookups: persistent or temporary")
+	cmd.Flags().StringVar(&expectWasmHash, "expect-wasm-hash", "",
+		"sha256 the contract's wasm must match (64 hex chars); adds a wasm_hash step, and with --file the default for entries that name none")
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run every check listed in this JSON file ("-" for stdin)`)
 	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
 		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
@@ -308,12 +319,13 @@ instead of hiding in the log. --json suppresses them.`,
 }
 
 // runCheckFile runs a batch of checks read from path.
-func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, report *reportFile) error {
+func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, expectWasmHash string, report *reportFile) error {
 	req, err := readBatch(cmd.InOrStdin(), path)
 	if err != nil {
 		return err
 	}
 	applyDefaultTimeout(&req, checkTimeout)
+	applyDefaultExpectWasm(&req, expectWasmHash)
 
 	p, cleanup, err := opts.prober()
 	if err != nil {
@@ -369,6 +381,20 @@ func applyDefaultTimeout(req *probe.BatchRequest, d time.Duration) {
 	for i := range req.Checks {
 		if req.Checks[i].Timeout == "" {
 			req.Checks[i].Timeout = d.String()
+		}
+	}
+}
+
+// applyDefaultExpectWasm fills entries that name no expect_wasm_hash with the
+// --expect-wasm-hash default, so one upgraded build can be asserted across a
+// whole file of contracts. A per-entry value always wins.
+func applyDefaultExpectWasm(req *probe.BatchRequest, hash string) {
+	if hash == "" {
+		return
+	}
+	for i := range req.Checks {
+		if req.Checks[i].ExpectWasmHash == "" {
+			req.Checks[i].ExpectWasmHash = hash
 		}
 	}
 }

@@ -2,8 +2,10 @@ package probe
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/soroworks/soroprobe/internal/health"
 )
@@ -25,6 +27,11 @@ type CheckRequest struct {
 	DataKeys []string `json:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
 	DataDurability health.Durability `json:"data_durability,omitempty"`
+	// ExpectWasmHash, when set, adds a wasm_hash step that fails unless the
+	// contract runs exactly this code: the 64 hex characters of the wasm's
+	// sha256, as a deploy pipeline knows it. It is the post-deploy assertion
+	// that an upgrade landed. Empty, the default, adds no step.
+	ExpectWasmHash string `json:"expect_wasm_hash,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -76,22 +83,37 @@ type CheckStep interface {
 
 // checkSteps is the default ordered list of steps run by Check.
 // Steps are run in order; execution stops at the first failure (except
-// ErrSkip, which is ignored and the next step runs).
+// ErrSkip, which is ignored and the next step runs). Steps that only apply
+// under some condition — such as wasm_hash, which needs an expected hash —
+// return ErrSkip and add nothing to the result.
 var checkSteps = []CheckStep{
 	&deployedStep{},
+	&wasmHashStep{},
 	&instanceTTLStep{},
 	&codeTTLStep{},
 	&dataTTLStep{},
 	&simulateStep{},
 }
 
-// Check runs the combined health check: is the contract deployed, are its
-// instance, code and named data entries live and not near expiration, and — if
-// a function was given — does a read-only call simulate successfully.
+// Check runs the combined health check: is the contract deployed, does it run
+// the expected wasm when one was given, are its instance, code and named data
+// entries live and not near expiration, and — if a function was given — does a
+// read-only call simulate successfully.
 // The check delegates to the ordered list defined by checkSteps. Each step
 // receives the inspect and simulate results computed once, so adding a step
 // cannot accidentally add RPC calls.
 func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, error) {
+	// A malformed expectation is a problem with the request, not with the
+	// contract, so it is rejected before any RPC call is made. The
+	// normalized form is what the wasm_hash step compares against.
+	if req.ExpectWasmHash != "" {
+		want, err := normalizeWasmHash(req.ExpectWasmHash)
+		if err != nil {
+			return nil, err
+		}
+		req.ExpectWasmHash = want
+	}
+
 	inspect, err := p.Inspect(ctx, InspectRequest{
 		ContractID:     req.ContractID,
 		DataKeys:       req.DataKeys,
@@ -185,6 +207,27 @@ func ttlCheck(name string, entry EntryReport) Check {
 
 // --- step implementations ---
 
+// ErrInvalidWasmHash reports an expect-wasm-hash value that is not a 32-byte
+// hex digest. It is bad input, not a failing contract: the CLI reports it as
+// a runtime error (exit 2) and the API answers 400, rather than recording a
+// failed check against a contract that was never assessed.
+var ErrInvalidWasmHash = errors.New("invalid expected wasm hash")
+
+// normalizeWasmHash validates an expected wasm hash and returns it in lower
+// case, the form InspectResult.WasmHash is reported in.
+func normalizeWasmHash(s string) (string, error) {
+	h := strings.ToLower(strings.TrimSpace(s))
+	if len(h) != 64 {
+		return "", fmt.Errorf("%w %q: want 64 hex characters (the sha256 of the wasm), got %d",
+			ErrInvalidWasmHash, s, len(h))
+	}
+	if _, err := hex.DecodeString(h); err != nil {
+		return "", fmt.Errorf("%w %q: want 64 hex characters (the sha256 of the wasm)",
+			ErrInvalidWasmHash, s)
+	}
+	return h, nil
+}
+
 type deployedStep struct{}
 
 func (s *deployedStep) Name() string { return "deployed" }
@@ -193,6 +236,36 @@ func (s *deployedStep) Run(_ context.Context, _ CheckRequest, inspect *InspectRe
 		return Check{Name: "deployed", Outcome: OutcomeFail, Detail: "no contract instance entry found on this network"}, nil
 	}
 	return Check{Name: "deployed", Outcome: OutcomePass, Detail: fmt.Sprintf("instance found, executable is %s", inspect.Executable)}, nil
+}
+
+// wasmHashStep asserts which code a contract runs, by comparing the Wasm hash
+// read with the instance entry against the expected one. It reads only the
+// InspectResult, so it adds no RPC calls of its own.
+type wasmHashStep struct{}
+
+func (s *wasmHashStep) Name() string { return "wasm_hash" }
+func (s *wasmHashStep) Run(_ context.Context, req CheckRequest, inspect *InspectResult, _ *SimulateResult) (Check, error) {
+	// The step exists only when a hash was expected, so checks that do not
+	// ask gain no new line in their output.
+	if req.ExpectWasmHash == "" {
+		return Check{}, ErrSkip
+	}
+	want := strings.ToLower(req.ExpectWasmHash)
+
+	switch {
+	case inspect.Executable == "stellar_asset":
+		return Check{Name: "wasm_hash", Outcome: OutcomeFail, Detail: fmt.Sprintf(
+			"stellar asset contract: the host implements it, so it runs no wasm and cannot match expected wasm hash %s", want)}, nil
+	case inspect.WasmHash == "":
+		return Check{Name: "wasm_hash", Outcome: OutcomeFail, Detail: fmt.Sprintf(
+			"contract reports executable %s and no wasm hash, so it cannot match expected wasm hash %s", inspect.Executable, want)}, nil
+	case !strings.EqualFold(inspect.WasmHash, want):
+		return Check{Name: "wasm_hash", Outcome: OutcomeFail, Detail: fmt.Sprintf(
+			"contract runs wasm hash %s, expected %s", inspect.WasmHash, want)}, nil
+	default:
+		return Check{Name: "wasm_hash", Outcome: OutcomePass, Detail: fmt.Sprintf(
+			"contract runs the expected wasm hash %s", strings.ToLower(inspect.WasmHash))}, nil
+	}
 }
 
 type instanceTTLStep struct{}
