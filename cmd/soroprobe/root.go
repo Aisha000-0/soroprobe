@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -151,5 +152,21 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 		_ = client.Close()
 		return nil, nil, err
 	}
-	return p, func() { _ = client.Close() }, nil
+	// client.Close waits for in-flight requests, and a check that hit its
+	// per-check timeout leaves its RPC call running until the transport's own
+	// timeout (RPC_TIMEOUT, 30s by default) expires. Waiting that out would
+	// undo the point of the limit, so close within a grace period and then
+	// leave: the call is abandoned and its reply is never read.
+	const closeGrace = 2 * time.Second
+	return p, func() {
+		done := make(chan struct{})
+		go func() {
+			_ = client.Close()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(closeGrace):
+		}
+	}, nil
 }

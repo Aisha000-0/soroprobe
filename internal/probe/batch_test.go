@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	protocol "github.com/stellar/go-stellar-sdk/protocols/rpc"
 	"github.com/stretchr/testify/assert"
@@ -163,4 +164,40 @@ func TestCheckBatchPerCheckTimeoutContinuesPastTheHungCheck(t *testing.T) {
 	assert.Contains(t, result.Items[0].Error, "timed out after 50ms")
 	require.NotNil(t, result.Items[1].Result, "the batch continues past a timeout")
 	assert.True(t, result.Items[1].Result.OK)
+}
+
+// deadClient never answers and ignores the context it is given, standing in for
+// the live JSON-RPC transport, which posts with an uncontexted request and so
+// cannot be interrupted once a call is in flight.
+type deadClient struct {
+	*stellartest.Fake
+}
+
+func (c *deadClient) GetLedgerEntries(context.Context, protocol.GetLedgerEntriesRequest) (protocol.GetLedgerEntriesResponse, error) {
+	select {} // stays blocked; the abandoned goroutine ends with the test binary
+}
+
+func TestCheckBatchPerCheckTimeoutBoundsAnUninterruptibleCall(t *testing.T) {
+	t.Parallel()
+
+	p, err := probe.New(probe.Options{
+		Client:        &deadClient{Fake: stellartest.NewFake(t)},
+		SourceAccount: stellartest.SourceAccount,
+		Thresholds:    health.DefaultThresholds,
+	})
+	require.NoError(t, err)
+
+	slow := named("slow", stellartest.WasmContract, "")
+	slow.Timeout = "50ms"
+
+	start := time.Now()
+	result, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: []probe.NamedCheck{slow}})
+	require.NoError(t, err)
+
+	assert.Less(t, time.Since(start), 5*time.Second,
+		"the batch returns at the per-check deadline, not after the RPC timeout")
+	assert.True(t, result.Errored)
+	require.Len(t, result.Items, 1)
+	assert.Nil(t, result.Items[0].Result)
+	assert.Contains(t, result.Items[0].Error, "timed out after 50ms")
 }
