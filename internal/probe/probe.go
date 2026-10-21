@@ -1,5 +1,6 @@
 // Package probe orchestrates SoroProbe's three operations — simulate, inspect
-// and check — on top of the stellar, scval and health packages.
+// and check — on top of the stellar, scval and health packages, and answers
+// readiness questions about the RPC endpoint itself.
 //
 // Every operation returns a plain result struct. The CLI and the HTTP API both
 // render those structs, so the two interfaces cannot drift apart.

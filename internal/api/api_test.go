@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,24 @@ func newServer(t *testing.T, fake *stellartest.Fake) http.Handler {
 	require.NoError(t, err)
 
 	return api.New(api.Options{Prober: p}).Handler()
+}
+
+// newReadinessServer builds a handler with explicit readiness settings, for
+// the tests that pin the network passphrase and the cache window.
+func newReadinessServer(t *testing.T, fake *stellartest.Fake, passphrase string, ttl time.Duration) http.Handler {
+	t.Helper()
+
+	p, err := probe.New(probe.Options{
+		Client:        fake,
+		SourceAccount: stellartest.SourceAccount,
+	})
+	require.NoError(t, err)
+
+	return api.New(api.Options{
+		Prober:            p,
+		NetworkPassphrase: passphrase,
+		ReadinessCacheTTL: ttl,
+	}).Handler()
 }
 
 // do issues a request and decodes the JSON body into v when v is non-nil.
@@ -475,6 +494,7 @@ func TestSecurityHeadersOnEveryRoute(t *testing.T) {
 		body   string
 	}{
 		{http.MethodGet, "/healthz", ""},
+		{http.MethodGet, "/readyz", ""},
 		{http.MethodPost, "/v1/simulate",
 			`{"contract_id":"` + stellartest.SACContract + `","function":"decimals"}`},
 		{http.MethodGet, "/v1/inspect/" + stellartest.SACContract, ""},
@@ -508,6 +528,7 @@ func TestVersionedRoutesAreNotCached(t *testing.T) {
 	for _, target := range []string{
 		"/v1/inspect/" + stellartest.SACContract,
 		"/v1/check/" + stellartest.SACContract + "?fn=decimals",
+		"/readyz",
 	} {
 		rec := do(t, h, http.MethodGet, target, "", nil)
 		assert.Equal(t, "no-store", rec.Header().Get("Cache-Control"), target)
@@ -517,4 +538,146 @@ func TestVersionedRoutesAreNotCached(t *testing.T) {
 	// cheaply, so it stays out of the no-store rule.
 	rec := do(t, h, http.MethodGet, "/healthz", "", nil)
 	assert.Empty(t, rec.Header().Get("Cache-Control"))
+}
+
+func TestReadinessHealthyRPC(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/readyz", "", &body)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ready", body["status"])
+}
+
+func TestReadinessUnhealthyRPC(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	fake.HealthStatus = "unhealthy"
+	h := newServer(t, fake)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/readyz", "", &body)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "unready", body["status"])
+	assert.Contains(t, body["reason"], "unhealthy")
+}
+
+func TestReadinessUnreachableRPC(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	fake.HealthErr = errors.New("connection refused")
+	h := newServer(t, fake)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/readyz", "", &body)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, "unready", body["status"])
+	assert.Contains(t, body["reason"], "connection refused")
+}
+
+func TestReadinessWrongNetworkRPC(t *testing.T) {
+	t.Parallel()
+
+	// The server defaults to the testnet passphrase; the fake serves the
+	// public network, so a healthy endpoint is still not ready: it answers
+	// questions about the wrong chain.
+	fake := stellartest.NewFake(t)
+	fake.NetworkPassphrase = "Public Global Stellar Network ; September 2015"
+	h := newServer(t, fake)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/readyz", "", &body)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Contains(t, body["reason"], "wrong network")
+	assert.Contains(t, body["reason"], "Public Global Stellar Network")
+}
+
+func TestReadinessAcceptsTheConfiguredNetwork(t *testing.T) {
+	t.Parallel()
+
+	// An operator pointing at mainnet expects the public passphrase, and a
+	// public-network endpoint must then read as ready.
+	fake := stellartest.NewFake(t)
+	fake.NetworkPassphrase = "Public Global Stellar Network ; September 2015"
+	h := newReadinessServer(t, fake, "Public Global Stellar Network ; September 2015", time.Minute)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/readyz", "", &body)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ready", body["status"])
+}
+
+func TestReadinessCachesTheResult(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newReadinessServer(t, fake, "Test SDF Network ; September 2015", time.Minute)
+
+	for i := 0; i < 3; i++ {
+		rec := do(t, h, http.MethodGet, "/readyz", "", nil)
+		assert.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	// A chatty orchestrator must not multiply RPC traffic: three probes
+	// inside the cache window cost one getHealth.
+	assert.Equal(t, 1, fake.HealthRequests)
+	assert.Equal(t, 1, fake.NetworkRequests)
+}
+
+func TestReadinessCacheExpires(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newReadinessServer(t, fake, "Test SDF Network ; September 2015", 50*time.Millisecond)
+
+	require.Equal(t, http.StatusOK, do(t, h, http.MethodGet, "/readyz", "", nil).Code)
+	time.Sleep(150 * time.Millisecond)
+	require.Equal(t, http.StatusOK, do(t, h, http.MethodGet, "/readyz", "", nil).Code)
+
+	assert.Equal(t, 2, fake.HealthRequests, "the expired result must be re-probed")
+}
+
+func TestReadinessCachesFailuresToo(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	fake.HealthStatus = "unhealthy"
+	h := newReadinessServer(t, fake, "Test SDF Network ; September 2015", time.Minute)
+
+	rec := do(t, h, http.MethodGet, "/readyz", "", nil)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+
+	// The upstream recovers, but the cached verdict stands until the TTL
+	// passes: probes must not hammer an endpoint that is already down.
+	fake.HealthStatus = ""
+	rec = do(t, h, http.MethodGet, "/readyz", "", nil)
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Equal(t, 1, fake.HealthRequests)
+}
+
+func TestLivenessStillIgnoresReadiness(t *testing.T) {
+	t.Parallel()
+
+	// The two probes stay independent: an unhealthy RPC endpoint makes the
+	// instance unready but never unlive, so a restart is not triggered.
+	fake := stellartest.NewFake(t)
+	fake.HealthErr = errors.New("rpc down")
+	h := newServer(t, fake)
+
+	require.Equal(t, http.StatusServiceUnavailable,
+		do(t, h, http.MethodGet, "/readyz", "", nil).Code)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/healthz", "", &body)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok", body["status"])
 }
