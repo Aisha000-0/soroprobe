@@ -133,6 +133,7 @@ func NewFake(t testing.TB) *Fake {
 
 	f.Simulations["decimals"] = LoadSimulate(t, "simulate_success.json")
 	f.Simulations["no_such_fn"] = LoadSimulate(t, "simulate_failure.json")
+	f.Simulations["transfer"] = LoadSimulate(t, "simulate_auth.json")
 	return f
 }
 

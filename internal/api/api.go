@@ -7,6 +7,7 @@ package api
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -63,6 +64,7 @@ func New(opts Options) *Server {
 	r.Use(s.logRequests)
 
 	r.Get("/healthz", s.handleLiveness)
+	r.Get("/openapi.json", s.handleOpenAPI)
 	r.Route("/v1", func(r chi.Router) {
 		// Answers reflect live on-chain state, so they must not be replayed
 		// from a shared or intermediary cache.
@@ -109,6 +111,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		s.log.Info("shutting down http api")
 		return srv.Shutdown(shutdownCtx)
 	}
+}
+
+//go:embed openapi.json
+var openAPISpec []byte
+
+func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(openAPISpec)
 }
 
 // nosniff stops a browser from reinterpreting a response as a type it did not

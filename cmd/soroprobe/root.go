@@ -61,6 +61,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
 	flags.String("sorovault-url", "", fmt.Sprintf("SoroVault registry used to type simulate arguments from the contract's interface (env %s)", config.EnvSoroVaultURL))
+	flags.Int64("base-fee", 0, fmt.Sprintf("base inclusion fee per operation in stroops (env %s) (default %d)", config.EnvBaseFee, config.DefaultBaseFee))
 	flags.BoolVar(&opts.jsonOut, "json", false, "emit JSON instead of human-readable output")
 
 	cmd.AddCommand(
@@ -106,6 +107,9 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("sorovault-url") {
 		cfg.SoroVaultURL, _ = flags.GetString("sorovault-url")
 	}
+	if flags.Changed("base-fee") {
+		cfg.BaseFee, _ = flags.GetInt64("base-fee")
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -147,6 +151,7 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 		Logger:  log,
 		ABI:     source,
 		Network: abi.NetworkName(o.cfg.NetworkPassphrase),
+		BaseFee: o.cfg.BaseFee,
 	})
 	if err != nil {
 		_ = client.Close()

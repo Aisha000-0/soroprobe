@@ -23,7 +23,7 @@ func TestRenderSimulateSuccess(t *testing.T) {
 		Function:     "decimals",
 		Success:      true,
 		ReturnValue:  uint32(7),
-		Cost:         probe.Cost{Instructions: 127569, MinResourceFee: 12279, ResourceFee: 12279},
+		Cost:         probe.Cost{Instructions: 127569, MinResourceFee: 12279, ResourceFee: 12279, EstimatedTotalFee: 12379},
 		Footprint:    probe.Footprint{ReadOnly: []string{"contract instance CDLZ... (persistent)"}},
 		LatestLedger: 4014125,
 	})
@@ -38,6 +38,45 @@ func TestRenderSimulateSuccess(t *testing.T) {
 	// Fees are shown in both stroops and XLM, since neither alone is obvious.
 	assert.Contains(t, out, "12279 stroops")
 	assert.Contains(t, out, "0.0012279 XLM")
+	assert.Contains(t, out, "estimated total fee")
+	assert.Contains(t, out, "12379 stroops")
+	assert.Contains(t, out, "0.0012379 XLM")
+}
+
+func TestRenderSimulateShowsAuth(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	err := renderSimulate(&buf, &probe.SimulateResult{
+		ContractID: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+		Function:   "transfer",
+		Success:    true,
+		Auth: []probe.AuthEntry{
+			{
+				Address:         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+				IsSourceAccount: true,
+				RootInvocation: &probe.AuthorizedInvocation{
+					ContractID: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+					Function:   "transfer",
+					Args:       []any{"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF", "GB...", "100"},
+				},
+			},
+			{
+				RawXDR: "AAAA...rawXDR",
+			},
+		},
+		Cost:         probe.Cost{EstimatedTotalFee: 12379},
+		LatestLedger: 4014125,
+	})
+	require.NoError(t, err)
+
+	out := buf.String()
+	assert.Contains(t, out, "authorizations")
+	assert.Contains(t, out, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
+	assert.Contains(t, out, "(source account)")
+	assert.Contains(t, out, "transfer")
+	assert.Contains(t, out, "raw xdr:")
+	assert.Contains(t, out, "AAAA...rawXDR")
 }
 
 func TestRenderSimulateShowsInterfaceTyping(t *testing.T) {
