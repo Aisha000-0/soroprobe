@@ -112,38 +112,50 @@ func encodeBool(literal string) (xdr.ScVal, error) {
 }
 
 func encodeU32(literal string) (xdr.ScVal, error) {
-	n, err := strconv.ParseUint(strings.TrimSpace(literal), 10, 32)
+	n, err := parseInteger(literal)
 	if err != nil {
-		return xdr.ScVal{}, fmt.Errorf("expected a u32, got %q", literal)
+		return xdr.ScVal{}, err
 	}
-	v := xdr.Uint32(n)
+	if err := checkRange(n, 32, false, "u32"); err != nil {
+		return xdr.ScVal{}, err
+	}
+	v := xdr.Uint32(n.Uint64())
 	return xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &v}, nil
 }
 
 func encodeI32(literal string) (xdr.ScVal, error) {
-	n, err := strconv.ParseInt(strings.TrimSpace(literal), 10, 32)
+	n, err := parseInteger(literal)
 	if err != nil {
-		return xdr.ScVal{}, fmt.Errorf("expected an i32, got %q", literal)
+		return xdr.ScVal{}, err
 	}
-	v := xdr.Int32(n)
+	if err := checkRange(n, 32, true, "i32"); err != nil {
+		return xdr.ScVal{}, err
+	}
+	v := xdr.Int32(n.Int64())
 	return xdr.ScVal{Type: xdr.ScValTypeScvI32, I32: &v}, nil
 }
 
 func encodeU64(literal string) (xdr.ScVal, error) {
-	n, err := strconv.ParseUint(strings.TrimSpace(literal), 10, 64)
+	n, err := parseInteger(literal)
 	if err != nil {
-		return xdr.ScVal{}, fmt.Errorf("expected a u64, got %q", literal)
+		return xdr.ScVal{}, err
 	}
-	v := xdr.Uint64(n)
+	if err := checkRange(n, 64, false, "u64"); err != nil {
+		return xdr.ScVal{}, err
+	}
+	v := xdr.Uint64(n.Uint64())
 	return xdr.ScVal{Type: xdr.ScValTypeScvU64, U64: &v}, nil
 }
 
 func encodeI64(literal string) (xdr.ScVal, error) {
-	n, err := strconv.ParseInt(strings.TrimSpace(literal), 10, 64)
+	n, err := parseInteger(literal)
 	if err != nil {
-		return xdr.ScVal{}, fmt.Errorf("expected an i64, got %q", literal)
+		return xdr.ScVal{}, err
 	}
-	v := xdr.Int64(n)
+	if err := checkRange(n, 64, true, "i64"); err != nil {
+		return xdr.ScVal{}, err
+	}
+	v := xdr.Int64(n.Int64())
 	return xdr.ScVal{Type: xdr.ScValTypeScvI64, I64: &v}, nil
 }
 
@@ -226,13 +238,108 @@ func encodeAddress(literal string) (xdr.ScVal, error) {
 
 // --- 128 and 256 bit integers ---------------------------------------------
 
-func parseBigInt(literal string) (*big.Int, error) {
+// maxDecimals bounds the decimal count of a scaled amount. Ten to the
+// seventy-seventh does not fit in a 256-bit integer, so no amount SoroProbe
+// could encode has more decimals than this, and the bound keeps the scaling
+// arithmetic cheap.
+const maxDecimals = 76
+
+// parseInteger parses an integer literal into a big.Int.
+//
+// The literal may carry a decimal scale, written as an "@" followed by the
+// token's decimal count: "10.5@7" is 10.5 units of a 7-decimal token, which
+// is 105000000 base units. The scaling is exact — the integer and fractional
+// parts are combined with big.Int arithmetic, never with floating point — so
+// no amount is ever silently off by a rounding error.
+//
+// A fractional part with more digits than the decimal count is rejected
+// rather than rounded, because a rounded amount is a different amount.
+func parseInteger(literal string) (*big.Int, error) {
 	s := strings.TrimSpace(literal)
+	if s == "" {
+		return nil, fmt.Errorf("expected an integer, got %q", literal)
+	}
+
+	value, scale, hasScale := strings.Cut(s, "@")
+	if !hasScale {
+		return parseWholeNumber(value, literal)
+	}
+
+	decimals, ok := new(big.Int).SetString(scale, 10)
+	if !ok || decimals.Sign() < 0 {
+		return nil, fmt.Errorf("expected a decimal count after \"@\", got %q", scale)
+	}
+	if !decimals.IsUint64() || decimals.Uint64() > maxDecimals {
+		return nil, fmt.Errorf("decimal count %s is out of range (0-%d)", decimals, maxDecimals)
+	}
+	return scaleByDecimals(value, decimals.Uint64(), literal)
+}
+
+// parseWholeNumber parses a plain base-10 integer.
+func parseWholeNumber(s, literal string) (*big.Int, error) {
+	if strings.ContainsRune(s, '.') {
+		return nil, fmt.Errorf(
+			"expected an integer, got %q (write %q to scale a token amount by its decimal count)",
+			literal, literal+"@7")
+	}
 	n, ok := new(big.Int).SetString(s, 10)
 	if !ok {
 		return nil, fmt.Errorf("expected a base-10 integer, got %q", literal)
 	}
 	return n, nil
+}
+
+// scaleByDecimals converts a decimal amount into base units.
+//
+// The value is split into its integer and fractional parts, the fraction is
+// padded out to the token's decimal count, and the two are concatenated into
+// a single integer: 10.5 at 7 decimals becomes the digits "10" and "5000000",
+// which is 105000000. Working on the digits rather than on a float keeps the
+// conversion exact for any number of digits.
+func scaleByDecimals(value string, decimals uint64, literal string) (*big.Int, error) {
+	negative := false
+	switch {
+	case strings.HasPrefix(value, "-"):
+		negative = true
+		value = value[1:]
+	case strings.HasPrefix(value, "+"):
+		value = value[1:]
+	}
+
+	intPart, fracPart, _ := strings.Cut(value, ".")
+	if intPart == "" && fracPart == "" {
+		return nil, fmt.Errorf("expected a number, got %q", literal)
+	}
+	if !isDigits(intPart) || !isDigits(fracPart) {
+		return nil, fmt.Errorf("expected a number, got %q", literal)
+	}
+	if uint64(len(fracPart)) > decimals {
+		return nil, fmt.Errorf(
+			"amount %q has %d fractional digits but the token has %d decimals, so it cannot be represented exactly",
+			literal, len(fracPart), decimals)
+	}
+
+	digits := intPart + fracPart + strings.Repeat("0", int(decimals)-len(fracPart))
+	n, ok := new(big.Int).SetString(digits, 10)
+	if !ok {
+		return nil, fmt.Errorf("expected a number, got %q", literal)
+	}
+	if negative {
+		n.Neg(n)
+	}
+	return n, nil
+}
+
+// isDigits reports whether s is a run of decimal digits. The empty string is
+// a run of zero digits, which is how an absent integer or fractional part is
+// spelled.
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // checkRange rejects values that do not fit the target width.
@@ -272,7 +379,7 @@ func twosComplementWords(n *big.Int, count int) []uint64 {
 }
 
 func encodeU128(literal string) (xdr.ScVal, error) {
-	n, err := parseBigInt(literal)
+	n, err := parseInteger(literal)
 	if err != nil {
 		return xdr.ScVal{}, err
 	}
@@ -285,7 +392,7 @@ func encodeU128(literal string) (xdr.ScVal, error) {
 }
 
 func encodeI128(literal string) (xdr.ScVal, error) {
-	n, err := parseBigInt(literal)
+	n, err := parseInteger(literal)
 	if err != nil {
 		return xdr.ScVal{}, err
 	}
@@ -298,7 +405,7 @@ func encodeI128(literal string) (xdr.ScVal, error) {
 }
 
 func encodeU256(literal string) (xdr.ScVal, error) {
-	n, err := parseBigInt(literal)
+	n, err := parseInteger(literal)
 	if err != nil {
 		return xdr.ScVal{}, err
 	}
@@ -314,7 +421,7 @@ func encodeU256(literal string) (xdr.ScVal, error) {
 }
 
 func encodeI256(literal string) (xdr.ScVal, error) {
-	n, err := parseBigInt(literal)
+	n, err := parseInteger(literal)
 	if err != nil {
 		return xdr.ScVal{}, err
 	}

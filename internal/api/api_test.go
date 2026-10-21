@@ -129,6 +129,35 @@ func TestSimulateEndpointReportsContractFailureAs200(t *testing.T) {
 	assert.NotEmpty(t, result.Error)
 }
 
+func TestSimulateEndpointComparesAgainstABaseline(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	var result probe.SimulateResult
+	rec := do(t, h, http.MethodPost, "/v1/simulate",
+		`{"contract_id":"`+stellartest.SACContract+`","function":"decimals",`+
+			`"baseline":{"contract_id":"`+stellartest.SACContract+`","function":"decimals","cost":{"instructions":1}}}`, &result)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.NotNil(t, result.Comparison)
+	require.Len(t, result.Comparison.Figures, 4)
+	assert.Positive(t, result.Comparison.Figures[0].Delta)
+}
+
+func TestSimulateEndpointRejectsABaselineForAnotherCall(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	// A baseline for a different call is bad input, not an upstream failure.
+	rec := do(t, h, http.MethodPost, "/v1/simulate",
+		`{"contract_id":"`+stellartest.SACContract+`","function":"decimals",`+
+			`"baseline":{"contract_id":"`+stellartest.WasmContract+`","function":"decimals","cost":{}}}`, nil)
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
 func TestSimulateEndpointBadRequests(t *testing.T) {
 	t.Parallel()
 
@@ -233,6 +262,32 @@ func TestInspectEndpointRejectsUnknownDurability(t *testing.T) {
 
 	rec := do(t, h, http.MethodGet,
 		"/v1/inspect/"+stellartest.SACContract+"?durability=forever", "", nil)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestInspectEndpointEstimatesTheExtendFee(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	var result probe.InspectResult
+	rec := do(t, h, http.MethodGet,
+		"/v1/inspect/"+stellartest.SACContract+"?estimate_extend=1000000", "", &result)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	require.Len(t, result.ExtendEstimates, 1)
+	assert.Equal(t, "instance", result.ExtendEstimates[0].Kind)
+	assert.EqualValues(t, 1000000, result.ExtendEstimates[0].Ledgers)
+	assert.Positive(t, result.ExtendEstimates[0].ResourceFee)
+}
+
+func TestInspectEndpointRejectsABadExtendCount(t *testing.T) {
+	t.Parallel()
+
+	h := newServer(t, stellartest.NewFake(t))
+
+	rec := do(t, h, http.MethodGet,
+		"/v1/inspect/"+stellartest.SACContract+"?estimate_extend=lots", "", nil)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
 

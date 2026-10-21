@@ -174,6 +174,10 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 		}
 	}
 
+	if r.Comparison != nil {
+		renderCostComparison(bw, s, r.Comparison)
+	}
+
 	if r.RestoreRequired != nil {
 		bw.printf("\n%s\n", s.red("RESTORE REQUIRED"))
 		bw.printf("  This call touches archived entries. They must be restored before it\n")
@@ -186,6 +190,27 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 
 	bw.printf("\n%s\n", s.dim(fmt.Sprintf("simulated against ledger %d", r.LatestLedger)))
 	return bw.err
+}
+
+// renderCostComparison prints each cost figure with its change against the
+// baseline, in absolute and percentage terms.
+//
+// The percentage is omitted rather than guessed at when the baseline figure
+// was zero: there is no percentage change from nothing, and inventing one
+// would make an increase look smaller than it is.
+func renderCostComparison(bw *bufWriter, s styler, c *probe.CostComparison) {
+	bw.printf("\n%s\n", s.bold("cost compared to the baseline"))
+	for _, f := range c.Figures {
+		percent := "n/a"
+		if f.Percent != nil {
+			percent = fmt.Sprintf("%+.1f%%", *f.Percent)
+		}
+		bw.printf("  %-22s %d -> %d  (%+d, %s)\n", f.Name, f.Baseline, f.Current, f.Delta, percent)
+	}
+	if c.Exceeded && c.MaxIncreasePercent != nil {
+		bw.printf("  %s\n", s.red(fmt.Sprintf(
+			"a cost figure grew by more than %s", formatPercent(*c.MaxIncreasePercent))))
+	}
 }
 
 func renderSimulateBatch(w io.Writer, r *probe.SimulateBatchResult) error {
@@ -268,9 +293,34 @@ func renderInspect(w io.Writer, r *probe.InspectResult) error {
 		bw.printf("  %s\n", string(encoded))
 	}
 
+	if len(r.ExtendEstimates) > 0 {
+		renderExtendEstimates(bw, s, r.ExtendEstimates)
+	}
+
 	bw.printf("\n%s %s\n", s.bold("overall"), s.status(r.Status))
 	bw.printf("%s\n", s.dim(fmt.Sprintf("checked at ledger %d", r.LatestLedger)))
 	return bw.err
+}
+
+// renderExtendEstimates prints what it would cost to keep each entry alive.
+//
+// An entry that cannot be extended says so instead of quoting a price: a
+// number for an entry that is not there would be worse than no number.
+func renderExtendEstimates(bw *bufWriter, s styler, estimates []probe.ExtendEstimate) {
+	bw.printf("\n%s %s\n", s.bold("cost to extend"), s.dim("(simulated; nothing is submitted)"))
+	for _, e := range estimates {
+		label := e.Kind
+		if e.Key != "" {
+			label = e.Kind + " " + e.Key
+		}
+		if e.Note != "" {
+			bw.printf("  %-22s %s\n", label, s.dim(e.Note))
+			continue
+		}
+		bw.printf("  %-22s %s  %s\n", label,
+			stroops(e.ResourceFee),
+			s.dim(fmt.Sprintf("to ledger %d, %d ledgers", e.ExtendTo, e.Ledgers)))
+	}
 }
 
 func renderEntry(bw *bufWriter, s styler, label string, e probe.EntryReport) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -29,6 +30,12 @@ type simulateBody struct {
 	ContractID string   `json:"contract_id"`
 	Function   string   `json:"function"`
 	Args       []string `json:"args"`
+	// Baseline is a saved simulation report to compare the cost against.
+	// It has the shape a --json report has.
+	Baseline *probe.Baseline `json:"baseline,omitempty"`
+	// MaxIncreasePercent is the largest tolerated percentage increase in any
+	// cost figure. It only has an effect alongside a baseline.
+	MaxIncreasePercent *float64 `json:"max_increase_percent,omitempty"`
 }
 
 // maxAPIBatchChecks is lower than probe.MaxBatchChecks because the whole
@@ -78,9 +85,11 @@ func (s *Server) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.prober.Simulate(r.Context(), probe.SimulateRequest{
-		ContractID: body.ContractID,
-		Function:   body.Function,
-		Args:       body.Args,
+		ContractID:         body.ContractID,
+		Function:           body.Function,
+		Args:               body.Args,
+		Baseline:           body.Baseline,
+		MaxIncreasePercent: body.MaxIncreasePercent,
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
@@ -99,16 +108,37 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	estimateExtend, err := estimateExtendParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	result, err := s.prober.Inspect(r.Context(), probe.InspectRequest{
 		ContractID:     chi.URLParam(r, "contract"),
 		DataKeys:       r.URL.Query()["key"],
 		DataDurability: durability,
+		EstimateExtend: estimateExtend,
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// estimateExtendParam reads the number of ledgers to price an extension for.
+// Zero means no estimate was asked for.
+func estimateExtendParam(r *http.Request) (uint32, error) {
+	raw := r.URL.Query().Get("estimate_extend")
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("estimate_extend must be a number of ledgers, got %q", raw)
+	}
+	return uint32(value), nil
 }
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +186,8 @@ func statusForError(err error) int {
 	switch {
 	case errors.Is(err, abi.ErrNoSuchFunction),
 		errors.Is(err, probe.ErrInvalidBatch),
-		errors.Is(err, abi.ErrArgumentCount):
+		errors.Is(err, abi.ErrArgumentCount),
+		errors.Is(err, probe.ErrBaselineMismatch):
 		return http.StatusBadRequest
 	case strings.Contains(msg, "invalid contract id"),
 		strings.Contains(msg, "argument "),

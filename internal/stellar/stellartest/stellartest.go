@@ -39,6 +39,9 @@ const (
 	UndeployedContract = "CCV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XK5LVOV2XMCW"
 	// SourceAccount is the placeholder public key used to build transactions.
 	SourceAccount = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+	// ExtendFootprintTTL is the subject name of a transaction that extends
+	// the TTL of a ledger entry rather than invoking a contract function.
+	ExtendFootprintTTL = "extend_footprint_ttl"
 )
 
 // Load decodes a fixture file into v.
@@ -136,7 +139,7 @@ func NewFake(t testing.TB) *Fake {
 
 	f.Simulations["decimals"] = LoadSimulate(t, "simulate_success.json")
 	f.Simulations["no_such_fn"] = LoadSimulate(t, "simulate_failure.json")
-	f.Simulations["transfer"] = LoadSimulate(t, "simulate_auth.json")
+	f.Simulations[ExtendFootprintTTL] = LoadSimulate(t, "simulate_extend.json")
 	return f
 }
 
@@ -149,7 +152,7 @@ func (f *Fake) SimulateTransaction(_ context.Context, req protocol.SimulateTrans
 		return protocol.SimulateTransactionResponse{}, f.SimulateErr
 	}
 
-	fn, err := FunctionOf(req.Transaction)
+	fn, err := SubjectOf(req.Transaction)
 	if err != nil {
 		return protocol.SimulateTransactionResponse{}, err
 	}
@@ -230,9 +233,10 @@ func InstanceKeyOf(t testing.TB, contractID string) string {
 	return key
 }
 
-// FunctionOf decodes a base64 transaction envelope and returns the name of the
-// contract function it invokes.
-func FunctionOf(envelope string) (string, error) {
+// SubjectOf decodes a base64 transaction envelope and returns the name of
+// what it does: the contract function it invokes, or ExtendFootprintTTL for
+// an extension.
+func SubjectOf(envelope string) (string, error) {
 	var env xdr.TransactionEnvelope
 	if err := xdr.SafeUnmarshalBase64(envelope, &env); err != nil {
 		return "", fmt.Errorf("decode envelope: %w", err)
@@ -242,9 +246,14 @@ func FunctionOf(envelope string) (string, error) {
 	if len(ops) != 1 {
 		return "", fmt.Errorf("expected exactly 1 operation, got %d", len(ops))
 	}
+
+	if _, ok := ops[0].Body.GetExtendFootprintTtlOp(); ok {
+		return ExtendFootprintTTL, nil
+	}
+
 	invoke, ok := ops[0].Body.GetInvokeHostFunctionOp()
 	if !ok {
-		return "", fmt.Errorf("operation is not invokeHostFunction")
+		return "", fmt.Errorf("operation is neither invokeHostFunction nor extendFootprintTtl")
 	}
 	args, ok := invoke.HostFunction.GetInvokeContract()
 	if !ok {
