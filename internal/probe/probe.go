@@ -8,6 +8,7 @@ package probe
 import (
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/health"
@@ -23,8 +24,9 @@ type Prober struct {
 	thresholds health.Thresholds
 	log        *slog.Logger
 
-	abi     abi.Source
-	network string
+	abi          abi.Source
+	network      string
+	inspectCache *inspectCache
 }
 
 // Options configures a Prober.
@@ -48,6 +50,10 @@ type Options struct {
 	// Network is the label ABI lookups are filed under ("testnet",
 	// "public", ...). Only read when ABI is set.
 	Network string
+	// InspectCacheTTL enables a bounded cache for Inspect results. Zero, the
+	// default, disables it. A few seconds suits dashboards polling the same
+	// contracts: TTLs change at most once per ledger.
+	InspectCacheTTL time.Duration
 }
 
 // New builds a Prober.
@@ -67,14 +73,19 @@ func New(opts Options) (*Prober, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
+	var cache *inspectCache
+	if opts.InspectCacheTTL > 0 {
+		cache = newInspectCache(opts.InspectCacheTTL, inspectCacheMaxEntries)
+	}
 	return &Prober{
-		client:     opts.Client,
-		codec:      opts.Codec,
-		source:     opts.SourceAccount,
-		thresholds: opts.Thresholds,
-		log:        opts.Logger,
-		abi:        opts.ABI,
-		network:    opts.Network,
+		client:       opts.Client,
+		codec:        opts.Codec,
+		source:       opts.SourceAccount,
+		thresholds:   opts.Thresholds,
+		log:          opts.Logger,
+		abi:          opts.ABI,
+		network:      opts.Network,
+		inspectCache: cache,
 	}, nil
 }
 

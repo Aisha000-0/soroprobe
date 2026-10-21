@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,10 +22,18 @@ import (
 
 func newServer(t *testing.T, fake *stellartest.Fake) http.Handler {
 	t.Helper()
+	return newCachedServer(t, fake, 0)
+}
+
+// newCachedServer builds a server whose prober caches inspect results for ttl.
+// A zero ttl leaves the cache off.
+func newCachedServer(t *testing.T, fake *stellartest.Fake, ttl time.Duration) http.Handler {
+	t.Helper()
 
 	p, err := probe.New(probe.Options{
-		Client:        fake,
-		SourceAccount: stellartest.SourceAccount,
+		Client:          fake,
+		SourceAccount:   stellartest.SourceAccount,
+		InspectCacheTTL: ttl,
 	})
 	require.NoError(t, err)
 
@@ -408,4 +417,70 @@ func TestVersionedRoutesAreNotCached(t *testing.T) {
 	// cheaply, so it stays out of the no-store rule.
 	rec := do(t, h, http.MethodGet, "/healthz", "", nil)
 	assert.Empty(t, rec.Header().Get("Cache-Control"))
+}
+
+func TestInspectEndpointCacheHitAvoidsRPC(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, time.Minute)
+
+	var first, second probe.InspectResult
+	target := "/v1/inspect/" + stellartest.SACContract
+	rec := do(t, h, http.MethodGet, target, "", &first)
+	require.Equal(t, http.StatusOK, rec.Code)
+	rec = do(t, h, http.MethodGet, target, "", &second)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	assert.Len(t, fake.EntryRequests, 1, "a cache hit must not make an RPC call")
+	assert.NotZero(t, first.LatestLedger)
+	assert.Equal(t, first.LatestLedger, second.LatestLedger,
+		"a cached response still states the ledger it was computed at")
+}
+
+func TestInspectEndpointCacheExpires(t *testing.T) {
+	t.Parallel()
+
+	const ttl = 25 * time.Millisecond
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, ttl)
+	target := "/v1/inspect/" + stellartest.SACContract
+
+	do(t, h, http.MethodGet, target, "", nil)
+	do(t, h, http.MethodGet, target, "", nil)
+	require.Len(t, fake.EntryRequests, 1)
+
+	time.Sleep(2 * ttl)
+
+	do(t, h, http.MethodGet, target, "", nil)
+	assert.Len(t, fake.EntryRequests, 2, "an expired entry must be recomputed")
+}
+
+func TestSimulateEndpointIsNeverCached(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, time.Minute)
+	body := `{"contract_id":"` + stellartest.SACContract + `","function":"decimals"}`
+
+	do(t, h, http.MethodPost, "/v1/simulate", body, nil)
+	do(t, h, http.MethodPost, "/v1/simulate", body, nil)
+
+	assert.Len(t, fake.SimulateRequests, 2, "simulations must never be cached")
+}
+
+func TestCheckEndpointCachesInspectButNotSimulation(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	h := newCachedServer(t, fake, time.Minute)
+	target := "/v1/check/" + stellartest.SACContract + "?fn=decimals"
+
+	do(t, h, http.MethodGet, target, "", nil)
+	do(t, h, http.MethodGet, target, "", nil)
+
+	// Check inspects and then simulates. The inspect half is cacheable; the
+	// liveness call is not.
+	assert.Len(t, fake.EntryRequests, 1)
+	assert.Len(t, fake.SimulateRequests, 2)
 }

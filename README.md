@@ -361,6 +361,15 @@ simulation step is honestly reported as `SKIP`.
 Runs the HTTP API. It binds `127.0.0.1:8080` by default; `--addr` overrides
 `HTTP_ADDR`.
 
+`--inspect-cache-ttl` (env `INSPECT_CACHE_TTL`) lets the server reuse an inspect
+result for the same contract, durability and key set for that long. It is **off
+by default**: TTLs change at most once per ledger (about five seconds), so a
+cached answer can lag a ledger boundary, and on-demand computation keeps every
+response current. A value of `3s`–`5s` is reasonable for dashboards that poll
+the same contracts. A cached response still reports the ledger it was computed
+at in `latest_ledger`; simulations are never cached. The cache is bounded to 256
+entries, and expired entries are dropped on read.
+
 ### Global flags
 
 `--json`, `--config`, `--rpc-url`, `--network-passphrase`, `--source-account`,
@@ -533,6 +542,9 @@ pointed at the API cannot be tricked into interpreting a JSON body as HTML.
 Routes under `/v1` also carry `Cache-Control: no-store`: their answers describe
 live on-chain state, and a cached health result would be worse than no result.
 `/healthz` is exempt — it holds no chain state and is meant to be polled cheaply.
+The optional in-process inspect cache (`--inspect-cache-ttl`) is separate: it
+serves a recent answer for at most the configured few seconds and still reports
+the ledger it was computed at, but clients are never told to cache it.
 
 ## Configuration
 
@@ -546,6 +558,7 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `HTTP_ADDR` | `--addr` (on `serve`) | `127.0.0.1:8080` |
 | `LOG_LEVEL` | `--log-level` | `info` |
 | `RPC_TIMEOUT` | `--timeout` | `30s` |
+| `INSPECT_CACHE_TTL` | `--inspect-cache-ttl` (on `serve`) | `0s` (off) |
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |
 | `CRITICAL_LEDGERS` | `--critical-ledgers` | `17280` (≈1 day) |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
@@ -565,7 +578,8 @@ A config file, by contrast, is read directly. It is JSON with snake_case keys:
 {
   "rpc_url": "https://soroban-testnet.stellar.org",
   "warn_ledgers": 120960,
-  "critical_ledgers": 17280
+  "critical_ledgers": 17280,
+  "inspect_cache_ttl": "0s"
 }
 ```
 

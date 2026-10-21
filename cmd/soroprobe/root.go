@@ -144,9 +144,10 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 			Warn:     o.cfg.WarnLedgers,
 			Critical: o.cfg.CriticalLedgers,
 		},
-		Logger:  log,
-		ABI:     source,
-		Network: abi.NetworkName(o.cfg.NetworkPassphrase),
+		Logger:          log,
+		ABI:             source,
+		Network:         abi.NetworkName(o.cfg.NetworkPassphrase),
+		InspectCacheTTL: o.cfg.InspectCacheTTL,
 	})
 	if err != nil {
 		_ = client.Close()
