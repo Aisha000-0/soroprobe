@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/soroworks/soroprobe/internal/health"
@@ -20,17 +21,18 @@ var ErrInvalidBatch = errors.New("invalid check batch")
 // NamedCheck is one entry in a batch: a CheckRequest with a name that
 // identifies it in the results. The name defaults to the contract ID.
 type NamedCheck struct {
-	Name string `json:"name,omitempty"`
+	Name string `json:"name,omitempty" yaml:"name,omitempty"`
 	// Timeout bounds this one check, as a Go duration string ("45s"). Empty
 	// means no per-check limit beyond the context the caller passes; this is
 	// what keeps one slow contract from consuming a whole batch's budget.
-	Timeout string `json:"timeout,omitempty"`
-	CheckRequest
+	Timeout      string `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	CheckRequest `yaml:",inline"`
 }
 
 // BatchRequest is a list of checks to run together.
 type BatchRequest struct {
-	Checks []NamedCheck `json:"checks"`
+	Checks      []NamedCheck `json:"checks" yaml:"checks"`
+	Concurrency int          `json:"-" yaml:"-"`
 }
 
 // BatchItem is the outcome of one check in a batch. Exactly one of Result
@@ -53,58 +55,83 @@ type BatchResult struct {
 	Items   []BatchItem `json:"items"`
 }
 
-// CheckBatch runs each check in order and reports them together.
-//
-// Checks run sequentially: a batch is usually pointed at a public RPC
-// endpoint, and firing every check at once would trade a few seconds for
-// rate-limit failures. One check failing to run does not stop the others;
-// its error is recorded and the batch moves on. A check that outlives its
-// own Timeout is reported as one that could not run, and the batch continues;
-// the limit is enforced by CheckBatch itself (see runBounded), so it holds
-// even for an RPC that is already in flight and cannot be cancelled. Only a
-// malformed batch or a cancelled context returns a Go error.
+// CheckBatch runs up to the requested number of checks and reports them in
+// input order. One check failing to run does not stop the others; its error is
+// recorded and the batch moves on. A check that outlives its own Timeout is
+// reported as one that could not be run. Only a malformed batch or a cancelled
+// context returns a Go error.
 func (p *Prober) CheckBatch(ctx context.Context, req BatchRequest) (*BatchResult, error) {
 	if err := validateBatch(req); err != nil {
 		return nil, err
 	}
+	if req.Concurrency < 0 {
+		return nil, fmt.Errorf("%w: concurrency must not be negative", ErrInvalidBatch)
+	}
 
-	out := &BatchResult{OK: true, Items: make([]BatchItem, 0, len(req.Checks))}
-	for _, c := range req.Checks {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+	concurrency := req.Concurrency
+	if concurrency == 0 {
+		concurrency = 1
+	}
+	if concurrency > len(req.Checks) {
+		concurrency = len(req.Checks)
+	}
 
-		// Already validated, so the error cannot fire here.
-		timeout, _ := c.checkTimeout()
-		checkCtx, cancel := withCheckTimeout(ctx, timeout)
+	items := make([]BatchItem, len(req.Checks))
+	jobs := make(chan int, len(req.Checks))
+	for i := range req.Checks {
+		jobs <- i
+	}
+	close(jobs)
 
-		item := BatchItem{Name: checkName(c), ContractID: c.ContractID}
-		result, err := runBounded(checkCtx, p, c.CheckRequest)
-		cancel()
-		switch {
-		case err != nil:
-			// A cancelled caller aborts the batch; a check that merely ran
-			// out of its own time is one result among many.
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+	var workers sync.WaitGroup
+	workers.Add(concurrency)
+	for worker := 0; worker < concurrency; worker++ {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case i, ok := <-jobs:
+					if !ok || ctx.Err() != nil {
+						return
+					}
+					c := req.Checks[i]
+					timeout, _ := c.checkTimeout()
+					checkCtx, cancel := withCheckTimeout(ctx, timeout)
+					result, err := runBounded(checkCtx, p, c.CheckRequest)
+					cancel()
+
+					item := BatchItem{Name: checkName(c), ContractID: c.ContractID, Result: result}
+					if err != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+							item.Error = fmt.Sprintf("check timed out after %s", timeout)
+						} else {
+							item.Error = err.Error()
+						}
+						item.Result = nil
+					}
+					items[i] = item
+				}
 			}
-			// Only when a per-check limit was set does a deadline mean "this
-			// check timed out"; with none, the transport's own per-request
-			// timeout is what fires, and it stays an ordinary error.
-			if timeout > 0 && errors.Is(err, context.DeadlineExceeded) {
-				item.Error = fmt.Sprintf("check timed out after %s", timeout)
-			} else {
-				item.Error = err.Error()
-			}
+		}()
+	}
+	workers.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	out := &BatchResult{OK: true, Items: items}
+	for _, item := range items {
+		if item.Error != "" {
 			out.Errored = true
 			out.OK = false
-		default:
-			item.Result = result
-			if !result.OK {
-				out.OK = false
-			}
+		} else if !item.Result.OK {
+			out.OK = false
 		}
-		out.Items = append(out.Items, item)
 	}
 	return out, nil
 }

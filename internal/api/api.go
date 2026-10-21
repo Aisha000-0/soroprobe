@@ -37,6 +37,8 @@ type Options struct {
 	Addr string
 	// Logger receives request logs. Defaults to a discarding logger.
 	Logger *slog.Logger
+	// CORSOrigins is the exact-origin allow-list. Empty disables CORS.
+	CORSOrigins []string
 	// Timeout bounds a single request. Defaults to 60s.
 	Timeout time.Duration
 }
@@ -61,6 +63,9 @@ func New(opts Options) *Server {
 	r.Use(middleware.Timeout(opts.Timeout))
 	r.Use(nosniff)
 	r.Use(s.logRequests)
+	if len(opts.CORSOrigins) > 0 {
+		r.Use(cors(opts.CORSOrigins))
+	}
 
 	r.Get("/healthz", s.handleLiveness)
 	r.Route("/v1", func(r chi.Router) {
@@ -75,6 +80,34 @@ func New(opts Options) *Server {
 
 	s.router = r
 	return s
+}
+
+func cors(origins []string) func(http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		allowed[origin] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			_, ok := allowed[origin]
+			w.Header().Add("Vary", "Origin")
+			if ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				if !ok {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // Handler exposes the router, which makes the API testable with httptest

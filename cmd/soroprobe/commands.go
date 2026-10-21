@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"go.yaml.in/yaml/v3"
 
 	"github.com/soroworks/soroprobe/internal/api"
 	"github.com/soroworks/soroprobe/internal/health"
@@ -43,23 +45,40 @@ is handed an inferred i128.`
 
 func newSimulateCmd(opts *options) *cobra.Command {
 	var reportPath string
+	var file string
 
 	cmd := &cobra.Command{
-		Use:   "simulate <contract-id> <function> [args...]",
+		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
 		Short: "Simulate a contract invocation and report its result and cost",
 		Long: `Build a contract invocation, simulate it against the network, and report
 whether it would succeed, what it would return, and what it would cost.
 
 Nothing is submitted and no signing takes place.
 
+--file reads named calls from a JSON file ("-" for stdin). Each call contains
+name, contract_id, function and optional args. Calls run sequentially and
+individual errors do not stop later calls.
+
 ` + argHelp,
-		Args: cobra.MinimumNArgs(2),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if file != "" {
+				if len(args) > 0 {
+					return fmt.Errorf("give a contract call or --file, not both")
+				}
+				return nil
+			}
+			return cobra.MinimumNArgs(2)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := openReport(reportPath)
 			if err != nil {
 				return err
 			}
 			defer report.close()
+
+			if file != "" {
+				return runSimulateFile(cmd, opts, file, report)
+			}
 
 			p, cleanup, err := opts.prober()
 			if err != nil {
@@ -88,6 +107,7 @@ Nothing is submitted and no signing takes place.
 	}
 
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
+	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
 	return cmd
 }
 
@@ -173,6 +193,7 @@ func newCheckCmd(opts *options) *cobra.Command {
 	var durability string
 	var file string
 	var checkTimeout time.Duration
+	var concurrency int
 	var reportPath string
 
 	cmd := &cobra.Command{
@@ -236,7 +257,7 @@ instead of hiding in the log. --json suppresses them.`,
 			defer report.close()
 
 			if file != "" {
-				return runCheckFile(cmd, opts, file, checkTimeout, report)
+				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report)
 			}
 
 			d, err := parseDurability(durability)
@@ -303,17 +324,19 @@ instead of hiding in the log. --json suppresses them.`,
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run every check listed in this JSON file ("-" for stdin)`)
 	cmd.Flags().DurationVar(&checkTimeout, "check-timeout", 0,
 		`default time limit for each check in --file; a per-entry "timeout" wins (0 means no limit)`)
+	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "maximum number of --file checks to run at once")
 	cmd.Flags().StringVar(&reportPath, "report", "", "write the JSON result to this file while printing text as usual")
 	return cmd
 }
 
 // runCheckFile runs a batch of checks read from path.
-func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, report *reportFile) error {
+func runCheckFile(cmd *cobra.Command, opts *options, path string, checkTimeout time.Duration, concurrency int, report *reportFile) error {
 	req, err := readBatch(cmd.InOrStdin(), path)
 	if err != nil {
 		return err
 	}
 	applyDefaultTimeout(&req, checkTimeout)
+	req.Concurrency = concurrency
 
 	p, cleanup, err := opts.prober()
 	if err != nil {
@@ -387,10 +410,72 @@ func readBatch(stdin io.Reader, path string) (probe.BatchRequest, error) {
 	}
 
 	var req probe.BatchRequest
+	var err error
+	if ext := strings.ToLower(filepath.Ext(path)); ext == ".yaml" || ext == ".yml" {
+		dec := yaml.NewDecoder(r)
+		dec.KnownFields(true)
+		err = dec.Decode(&req)
+	} else {
+		dec := json.NewDecoder(r)
+		dec.DisallowUnknownFields()
+		err = dec.Decode(&req)
+	}
+	if err != nil {
+		return probe.BatchRequest{}, fmt.Errorf("read check file %s: %w", path, err)
+	}
+	return req, nil
+}
+
+func runSimulateFile(cmd *cobra.Command, opts *options, path string, report *reportFile) error {
+	req, err := readSimulateBatch(cmd.InOrStdin(), path)
+	if err != nil {
+		return err
+	}
+	p, cleanup, err := opts.prober()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	result, err := p.SimulateBatch(cmd.Context(), req)
+	if err != nil {
+		return err
+	}
+	if err := report.write(result); err != nil {
+		return err
+	}
+	if opts.jsonOut {
+		err = writeJSON(cmd.OutOrStdout(), result)
+	} else {
+		err = renderSimulateBatch(cmd.OutOrStdout(), result)
+	}
+	if err != nil {
+		return err
+	}
+	for _, item := range result.Items {
+		if item.Error != "" {
+			return fmt.Errorf("one or more simulation calls could not be run")
+		}
+	}
+	return nil
+}
+
+func readSimulateBatch(stdin io.Reader, path string) (probe.SimulateBatchRequest, error) {
+	var r io.Reader = stdin
+	if path != "-" {
+		f, err := os.Open(path)
+		if err != nil {
+			return probe.SimulateBatchRequest{}, err
+		}
+		defer f.Close()
+		r = f
+	}
+
+	var req probe.SimulateBatchRequest
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
-		return probe.BatchRequest{}, fmt.Errorf("read check file %s: %w", path, err)
+		return probe.SimulateBatchRequest{}, fmt.Errorf("read simulation file %s: %w", path, err)
 	}
 	return req, nil
 }
@@ -425,9 +510,10 @@ services. The API is read-only, exactly like the CLI.`,
 
 			log := opts.cfg.Logger(os.Stderr)
 			server := api.New(api.Options{
-				Prober: p,
-				Addr:   opts.cfg.HTTPAddr,
-				Logger: log,
+				Prober:      p,
+				Addr:        opts.cfg.HTTPAddr,
+				Logger:      log,
+				CORSOrigins: opts.cfg.CORSOrigins,
 			})
 			return server.ListenAndServe(cmd.Context())
 		},

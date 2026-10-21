@@ -37,6 +37,24 @@ func TestCheckBatchAllPass(t *testing.T) {
 	assert.True(t, result.Items[0].Result.OK)
 }
 
+func TestCheckBatchConcurrentKeepsInputOrder(t *testing.T) {
+	t.Parallel()
+	p := newProber(t, stellartest.NewFake(t), health.DefaultThresholds)
+	checks := []probe.NamedCheck{
+		named("first", stellartest.WasmContract, ""),
+		named("second", stellartest.SACContract, "decimals"),
+		named("third", stellartest.WasmContract, "decimals"),
+	}
+
+	result, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks, Concurrency: 3})
+	require.NoError(t, err)
+	require.Len(t, result.Items, len(checks))
+	for i, item := range result.Items {
+		assert.Equal(t, checks[i].Name, item.Name)
+		assert.NotNil(t, item.Result)
+	}
+}
+
 func TestCheckBatchUnhealthyIsNotAnError(t *testing.T) {
 	t.Parallel()
 	p := newProber(t, stellartest.NewFake(t), health.DefaultThresholds)

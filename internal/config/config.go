@@ -52,6 +52,7 @@ const (
 	EnvNetworkPassphrase = "NETWORK_PASSPHRASE"
 	EnvSourceAccount     = "SOURCE_ACCOUNT"
 	EnvHTTPAddr          = "HTTP_ADDR"
+	EnvCORSOrigins       = "CORS_ORIGINS"
 	EnvLogLevel          = "LOG_LEVEL"
 	EnvTimeout           = "RPC_TIMEOUT"
 	EnvWarnLedgers       = "WARN_LEDGERS"
@@ -71,6 +72,8 @@ type Config struct {
 	SourceAccount string `json:"source_account"`
 	// HTTPAddr is the listen address for the HTTP API.
 	HTTPAddr string `json:"http_addr"`
+	// CORSOrigins is the exact-origin allow-list for the HTTP API.
+	CORSOrigins []string `json:"-"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `json:"log_level"`
 	// Timeout bounds a single RPC request.
@@ -182,6 +185,14 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.NetworkPassphrase, lookup(EnvNetworkPassphrase))
 	setString(&cfg.SourceAccount, lookup(EnvSourceAccount))
 	setString(&cfg.HTTPAddr, lookup(EnvHTTPAddr))
+	if origins := lookup(EnvCORSOrigins); origins != nil {
+		cfg.CORSOrigins = nil
+		for _, origin := range strings.Split(*origins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				cfg.CORSOrigins = append(cfg.CORSOrigins, origin)
+			}
+		}
+	}
 	setString(&cfg.LogLevel, lookup(EnvLogLevel))
 	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
 

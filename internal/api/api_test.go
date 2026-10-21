@@ -300,6 +300,60 @@ func TestNoWriteRoutesExist(t *testing.T) {
 	}
 }
 
+func TestCORSAllowsConfiguredOriginAndPreflight(t *testing.T) {
+	t.Parallel()
+	p, err := probe.New(probe.Options{Client: stellartest.NewFake(t), SourceAccount: stellartest.SourceAccount})
+	require.NoError(t, err)
+	h := api.New(api.Options{Prober: p, CORSOrigins: []string{"https://dashboard.example"}}).Handler()
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/simulate", nil)
+	req.Header.Set("Origin", "https://dashboard.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	req.Header.Set("Access-Control-Request-Headers", "authorization,content-type")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+	assert.Equal(t, "https://dashboard.example", rec.Header().Get("Access-Control-Allow-Origin"))
+	assert.Contains(t, rec.Header().Get("Access-Control-Allow-Headers"), "Authorization")
+
+	actual := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	actual.Header.Set("Origin", "https://dashboard.example")
+	actualRec := httptest.NewRecorder()
+	h.ServeHTTP(actualRec, actual)
+	assert.Equal(t, "https://dashboard.example", actualRec.Header().Get("Access-Control-Allow-Origin"))
+}
+
+func TestCORSRejectsUnconfiguredOrigin(t *testing.T) {
+	t.Parallel()
+	p, err := probe.New(probe.Options{Client: stellartest.NewFake(t), SourceAccount: stellartest.SourceAccount})
+	require.NoError(t, err)
+	h := api.New(api.Options{Prober: p, CORSOrigins: []string{"https://dashboard.example"}}).Handler()
+
+	req := httptest.NewRequest(http.MethodOptions, "/v1/simulate", nil)
+	req.Header.Set("Origin", "https://other.example")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+
+	actual := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	actual.Header.Set("Origin", "https://other.example")
+	actualRec := httptest.NewRecorder()
+	h.ServeHTTP(actualRec, actual)
+	assert.Empty(t, actualRec.Header().Get("Access-Control-Allow-Origin"))
+}
+
+func TestCORSDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	h := newServer(t, stellartest.NewFake(t))
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Header.Set("Origin", "https://dashboard.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+}
+
 func TestMethodNotAllowed(t *testing.T) {
 	t.Parallel()
 
