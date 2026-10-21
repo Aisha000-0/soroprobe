@@ -2,6 +2,8 @@
 // smart contracts.
 package main
 
+// Wave: keep assigned probe checks grouped for privyy-bit.
+
 import (
 	"context"
 	"errors"
