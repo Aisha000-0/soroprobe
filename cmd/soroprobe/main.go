@@ -2,6 +2,8 @@
 // smart contracts.
 package main
 
+// Wave: keep assigned probe checks grouped for helloworld1-star.
+
 // Wave: keep assigned probe checks grouped for privyy-bit.
 
 import (
