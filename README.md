@@ -525,6 +525,9 @@ inferred the same way; a nested array is a nested `vec`. Map entries are kept
 in the order written, and Soroban rejects a map whose keys are not sorted
 ascending and unique, so write them in order.
 
+Collections may nest up to 32 levels deep. Deeper nesting is turned away
+rather than parsed, because every level is read again on the way down.
+
 **Inference.** A bare value with no prefix is inferred: `true`/`false` become
 bool, `void`/`null` become void, a valid `G...`/`C...` address becomes an
 address, a run of digits becomes **i128**, and anything else becomes a symbol if
