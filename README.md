@@ -151,6 +151,13 @@ echo $?    # 0 pass, 1 unhealthy, 2 SoroProbe could not run
 soroprobe simulate CDLZ... decimals --json | jq '.cost.instructions'
 ```
 
+**Keep logs readable and a report for later:**
+
+```bash
+soroprobe check CDLZ... --fn decimals --report report.json
+# prints the usual text report and writes report.json, even when the check fails
+```
+
 ## The state expiration model
 
 This is the part SoroProbe exists to make legible, so it is worth stating
@@ -224,6 +231,10 @@ restoration; it does not perform one.
 Builds an invocation, simulates it, and reports the outcome, decoded return
 value, resource cost and ledger footprint.
 
+| Flag | Description |
+| --- | --- |
+| `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
+
 A call the contract rejects is **not** a tool error — it exits 0 and reports
 `FAILED` with the host's error text. Use `check` if you want a non-zero exit.
 
@@ -236,6 +247,7 @@ Reads the contract's instance and code entries and reports expiration health.
 | `--key <spec>` | A contract data key to inspect, in `type:value` form. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Blank lines and `#` comment lines are ignored. |
 | `--durability <d>` | Durability for `--key` lookups: `persistent` (default) or `temporary`. |
+| `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
 Stellar RPC reads ledger entries **by key** and offers no way to enumerate the
 data entries a contract owns. Listing them all would require an indexer, which a
@@ -271,6 +283,7 @@ Combined health check, designed for CI.
 | `--key <spec>` | A contract data key to include in the TTL check. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Combined with `--key`. |
 | `--durability <d>` | Durability for `--key` lookups. |
+| `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
 Checks run in order: `deployed`, `instance_ttl`, `code_ttl`, any `data_ttl`, then
 `simulate`.
