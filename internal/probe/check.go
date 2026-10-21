@@ -26,10 +26,9 @@ type CheckRequest struct {
 	// than guessed at.
 	Function string `json:"function,omitempty" yaml:"function,omitempty"`
 	// Args are argument specifications for Function.
-	Args []string `json:"args,omitempty"`
-	// Expect is an optional argument specification for the expected return value.
-	Expect string `json:"expect,omitempty"`
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
+	// Expect is an optional argument specification for the expected return value.
+	Expect string `json:"expect,omitempty" yaml:"expect,omitempty"`
 	// DataKeys are optional data entries to include in the TTL assessment.
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
