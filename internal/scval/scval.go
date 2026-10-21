@@ -9,6 +9,10 @@
 //	sym:transfer     str:"hello world"  bytes:deadbeef
 //	addr:GABC...     addr:CDEF...       void
 //
+// An integer may carry a decimal scale, written as an "@" followed by the
+// token's decimal count: "i128:10.5@7" is 10.5 units of a 7-decimal token,
+// which is 105000000 base units.
+//
 // A bare value without a type prefix is inferred; see Registry.Encode for the
 // exact rules. Explicit prefixes are always preferred, because a contract that
 // expects u32 will fail confusingly if handed an i128.

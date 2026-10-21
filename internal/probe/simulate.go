@@ -20,6 +20,133 @@ type SimulateRequest struct {
 	Function string `json:"function"`
 	// Args are argument specifications in the scval package's "type:value" form.
 	Args []string `json:"args,omitempty"`
+	// Baseline, when set, is a saved simulation report whose cost this
+	// simulation is compared against. It must name the same contract and
+	// function; see ErrBaselineMismatch.
+	Baseline *Baseline `json:"baseline,omitempty"`
+	// MaxIncreasePercent, when set, is the largest percentage increase in
+	// any cost figure that is tolerated. It only has an effect alongside a
+	// Baseline.
+	MaxIncreasePercent *float64 `json:"max_increase_percent,omitempty"`
+}
+
+// ErrBaselineMismatch is returned when a baseline names a different contract
+// or function than the call being simulated. Its costs say nothing about a
+// different call, so comparing them would report a change that never
+// happened.
+var ErrBaselineMismatch = errors.New("the baseline does not match the call")
+
+// Baseline is a saved simulation report used as a cost reference.
+//
+// It has the shape a `simulate --json` report has, so a report saved from an
+// earlier run can be fed back in unchanged.
+type Baseline struct {
+	// ContractID is the contract the baseline was taken against.
+	ContractID string `json:"contract_id"`
+	// Function is the function the baseline was taken against.
+	Function string `json:"function"`
+	// Cost is the cost the baseline recorded.
+	Cost Cost `json:"cost"`
+}
+
+// CostChange is the change in one cost figure between a baseline and a
+// simulation.
+type CostChange struct {
+	// Name is the figure's label, such as "cpu instructions".
+	Name string `json:"name"`
+	// Baseline is the figure's value in the saved report.
+	Baseline int64 `json:"baseline"`
+	// Current is the figure's value in this simulation.
+	Current int64 `json:"current"`
+	// Delta is Current minus Baseline.
+	Delta int64 `json:"delta"`
+	// Percent is the percentage change. It is nil when the baseline was
+	// zero, because a percentage change from zero has no meaning.
+	Percent *float64 `json:"percent,omitempty"`
+}
+
+// CostComparison reports how a simulation's cost differs from a baseline.
+type CostComparison struct {
+	// Figures are the per-figure changes, in a stable order.
+	Figures []CostChange `json:"figures"`
+	// MaxIncreasePercent is the tolerated percentage increase, when a
+	// threshold was given.
+	MaxIncreasePercent *float64 `json:"max_increase_percent,omitempty"`
+	// Exceeded is true when a figure grew by more than the tolerance.
+	Exceeded bool `json:"exceeded"`
+}
+
+// costFigures lists the figures a comparison looks at, in a stable order.
+//
+// The minimum resource fee is deliberately left out: it is the network's
+// recommendation rather than a measurement, and it moves with the resource
+// fee anyway.
+func costFigures(c Cost) []CostFigure {
+	return []CostFigure{
+		{Name: "cpu instructions", Value: int64(c.Instructions)},
+		{Name: "disk read bytes", Value: int64(c.DiskReadBytes)},
+		{Name: "write bytes", Value: int64(c.WriteBytes)},
+		{Name: "resource fee (stroops)", Value: c.ResourceFee},
+	}
+}
+
+// CostFigure is one measurable figure of a simulation's cost.
+type CostFigure struct {
+	// Name is the figure's label.
+	Name string
+	// Value is the figure's value.
+	Value int64
+}
+
+// CompareCost compares a simulation's cost against a saved baseline.
+//
+// The comparison is a pure function of the two costs and the threshold, so it
+// can be exercised without a network or a prober.
+//
+// A figure that grew is compared in percentage terms. A baseline of zero has
+// no percentage to compare against, so any growth from it counts as an
+// increase without limit: from nothing to something is not a small change.
+func CompareCost(baseline, current Cost, maxIncreasePercent *float64) CostComparison {
+	base := costFigures(baseline)
+	cur := costFigures(current)
+
+	out := CostComparison{
+		Figures:            make([]CostChange, 0, len(base)),
+		MaxIncreasePercent: maxIncreasePercent,
+	}
+
+	for i := range base {
+		change := CostChange{
+			Name:     base[i].Name,
+			Baseline: base[i].Value,
+			Current:  cur[i].Value,
+		}
+		change.Delta = change.Current - change.Baseline
+		if change.Baseline != 0 {
+			percent := float64(change.Delta) / float64(change.Baseline) * 100
+			change.Percent = &percent
+		}
+		out.Figures = append(out.Figures, change)
+	}
+
+	if maxIncreasePercent == nil {
+		return out
+	}
+
+	threshold := *maxIncreasePercent
+	for _, f := range out.Figures {
+		if f.Delta <= 0 {
+			continue
+		}
+		if f.Percent == nil {
+			out.Exceeded = true
+			continue
+		}
+		if *f.Percent > threshold {
+			out.Exceeded = true
+		}
+	}
+	return out
 }
 
 // NamedSimulation is one named invocation in a simulation batch.
@@ -105,6 +232,10 @@ type SimulateResult struct {
 	Cost      Cost      `json:"cost"`
 	Footprint Footprint `json:"footprint"`
 
+	// Comparison is the cost compared against a baseline, when a baseline
+	// was supplied.
+	Comparison *CostComparison `json:"comparison,omitempty"`
+
 	// RestoreRequired is set when archived entries block the call.
 	RestoreRequired *RestoreInfo `json:"restore_required,omitempty"`
 
@@ -128,6 +259,11 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 	}
 	if req.Function == "" {
 		return nil, fmt.Errorf("a function name is required")
+	}
+	// A baseline for a different call is rejected before anything is sent:
+	// its costs would describe a call that was never made.
+	if err := checkBaseline(req); err != nil {
+		return nil, err
 	}
 
 	typed, err := p.typeArgs(ctx, req)
@@ -166,7 +302,37 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 	if typed.changed {
 		result.EncodedArgs = typed.args
 	}
+	if req.Baseline != nil {
+		comparison := CompareCost(req.Baseline.Cost, result.Cost, req.MaxIncreasePercent)
+		result.Comparison = &comparison
+	}
 	return result, nil
+}
+
+// checkBaseline rejects a baseline that does not describe the call being
+// simulated.
+//
+// A baseline is a report of one contract's one function. Its costs say
+// nothing about another call, so comparing them would report a change that
+// never happened — which is worse than no comparison at all, because it looks
+// like a measurement.
+func checkBaseline(req SimulateRequest) error {
+	if req.Baseline == nil {
+		return nil
+	}
+	if req.Baseline.ContractID == "" || req.Baseline.Function == "" {
+		return fmt.Errorf("%w: the baseline must name the contract and function it was taken against",
+			ErrBaselineMismatch)
+	}
+	if req.Baseline.ContractID != req.ContractID {
+		return fmt.Errorf("%w: the baseline is for contract %s, not %s",
+			ErrBaselineMismatch, req.Baseline.ContractID, req.ContractID)
+	}
+	if req.Baseline.Function != req.Function {
+		return fmt.Errorf("%w: the baseline is for function %s, not %s",
+			ErrBaselineMismatch, req.Baseline.Function, req.Function)
+	}
+	return nil
 }
 
 // typedArgs is the outcome of typing a request's arguments.

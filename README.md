@@ -235,6 +235,8 @@ value, resource cost and ledger footprint.
 | --- | --- |
 | `--file <path>` | Simulate named calls from a JSON file (`-` reads stdin). |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
+| `--baseline <path>` | Compare the cost against a saved simulation report (a previous `--json` output). |
+| `--max-increase <pct>` | Fail (exit 1) when a cost figure grows by more than this percentage. |
 
 A call the contract rejects is **not** a tool error — it exits 0 and reports
 `FAILED` with the host's error text. Use `check` if you want a non-zero exit.
@@ -245,6 +247,38 @@ reported and does not prevent later calls from running. Text output includes
 the name, success, a truncated return value, instructions and fee; `--json`
 returns the complete results. Unknown JSON fields are rejected.
 
+**Cost against a baseline.** Absolute cost budgets need someone to pick
+numbers. Often the useful question is relative: did this change make the call
+more expensive than it was on `main`? Save a report and compare against it:
+
+```
+$ soroprobe simulate CDLZ… transfer … --json > baseline.json
+$ soroprobe simulate CDLZ… transfer … --baseline baseline.json
+…
+cost compared to the baseline
+  cpu instructions       127569 -> 131072  (+3503, +2.7%)
+  disk read bytes        0 -> 0            (+0, n/a)
+  write bytes            0 -> 0            (+0, n/a)
+  resource fee (stroops) 12279 -> 13000    (+721, +5.9%)
+```
+
+The baseline must be for the **same contract and function**; a report for a
+different call is rejected rather than compared, because its costs describe a
+call that was never made.
+
+`--max-increase` turns the comparison into a gate. The command exits **1** when
+any cost figure grows by more than the threshold, which is what a CI job wants:
+
+```
+$ soroprobe simulate CDLZ… transfer … --baseline baseline.json --max-increase 10%
+error: the cost grew by more than 10%
+```
+
+The percentage sign is optional, so `10` and `10%` mean the same thing. A
+figure that grew from a baseline of zero has no percentage to compare
+against, so it counts as an increase however large the threshold is: from
+nothing to something is not a small change.
+
 ### `soroprobe inspect <contract-id>`
 
 Reads the contract's instance and code entries and reports expiration health.
@@ -254,6 +288,7 @@ Reads the contract's instance and code entries and reports expiration health.
 | `--key <spec>` | A contract data key to inspect, in `type:value` form. Repeatable. |
 | `--key-file <path>` | A file listing data keys, one spec per line. Blank lines and `#` comment lines are ignored. |
 | `--durability <d>` | Durability for `--key` lookups: `persistent` (default) or `temporary`. |
+| `--estimate-extend <ledgers>` | Also price extending each reported entry's TTL by this many ledgers. |
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 
 Stellar RPC reads ledger entries **by key** and offers no way to enumerate the
@@ -278,6 +313,36 @@ $ soroprobe inspect C… --key-file keys.txt
 Keys from the file and from `--key` are combined, duplicates dropped, and an
 invalid line fails immediately — reported with its line number, before any
 request is sent.
+
+**What keeping it alive costs.** Knowing an entry expires in two days is half
+the answer; the other half is what keeping it alive costs. `--estimate-extend`
+simulates an extension of each reported entry and reports the fee:
+
+```
+$ soroprobe inspect CDLZ… --estimate-extend 1209600
+contract CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
+
+executable stellar_asset
+
+state entries
+  instance   OK       healthy
+             live for 1012931 more ledgers (~58.7 days, until ledger 5027056)
+  code       n/a  built into the host, no code entry
+
+cost to extend (simulated; nothing is submitted)
+  instance               6128 stroops (0.0006128 XLM)  to ledger 5223725, 1209600 ledgers
+
+overall OK       healthy
+```
+
+The extension is only ever **simulated** — nothing is submitted, and the
+placeholder source account is enough. Each entry is priced on its own, with a
+footprint holding that entry alone, so the fee is the fee for the entry you
+are looking at.
+
+An entry that **cannot** be extended says so instead of quoting a price: a
+missing entry has nothing to extend, and an expired one must be restored
+before it can be extended.
 
 ### `soroprobe check <contract-id>`
 
@@ -391,7 +456,7 @@ soroprobe simulate CDLZ... transfer \
 | `void`, `null` | `void` |
 | `u32`, `i32` | `u32:5`, `i32:-5` |
 | `u64`, `i64` | `u64:100` |
-| `u128`, `i128` | `i128:-10000000` |
+| `u128`, `i128` | `i128:-10000000`, `i128:10.5@7` |
 | `u256`, `i256` | `u256:12345` |
 | `timepoint`, `duration` | `timepoint:1700000000` |
 | `sym`, `symbol` | `sym:transfer` |
@@ -400,6 +465,34 @@ soroprobe simulate CDLZ... transfer \
 | `addr`, `address` | `addr:GABC...`, `addr:CDEF...` |
 | `vec` | `vec:["u32:1","u32:2"]`, `vec:[1, 2]` |
 | `map` | `map:[["sym:a","u32:1"],["sym:b","u32:2"]]` |
+
+### Token amounts
+
+Token functions take amounts in **base units**, so 10 XLM-equivalent of a
+7-decimal token is `100000000`, and miscounting the zeros sends the wrong
+amount to a simulation. An integer argument can carry a decimal scale, written
+as an `@` followed by the token's decimal count:
+
+```bash
+soroprobe simulate CDLZ... transfer addr:GABC... addr:CDEF... i128:10.5@7
+```
+
+| Argument | Means | Encoded as |
+| --- | --- | --- |
+| `i128:10.5@7` | 10.5 tokens of a 7-decimal token | `105000000` |
+| `i128:10@7` | 10 tokens of a 7-decimal token | `100000000` |
+| `i128:-2.5@7` | minus 2.5 tokens | `-25000000` |
+| `i128:0.0000001@7` | one base unit | `1` |
+| `i128:10000000` | 10000000 base units, unscaled | `10000000` |
+
+The conversion is **exact**: the integer and fractional parts are scaled with
+integer arithmetic, never with floating point, so no amount is ever off by a
+rounding error. An amount with more fractional digits than the token has
+decimals — `i128:10.12345@2` — is **rejected** rather than rounded, because a
+rounded amount is a different amount. Negative amounts and zero work.
+
+The scale is part of the argument, so it needs a type prefix: a bare `10.5@7`
+is not an amount, it is a string.
 
 **Collections** are written as JSON, the one nesting syntax that survives a
 shell intact — quote the whole argument:
@@ -509,9 +602,28 @@ curl -s localhost:8080/v1/simulate -d '{
 }' | jq
 ```
 
+Optional `baseline` and `max_increase_percent` compare the cost against a saved
+report, exactly as `simulate --baseline` does. The baseline has the shape of a
+`--json` report:
+
+```bash
+curl -s localhost:8080/v1/simulate -d '{
+  "contract_id": "CDLZ…",
+  "function": "decimals",
+  "baseline": {"contract_id": "CDLZ…", "function": "decimals", "cost": {"instructions": 127569}},
+  "max_increase_percent": 10
+}' | jq
+```
+
+A baseline for a different contract or function is a **400**: it describes a
+call that was never made.
+
 ### `GET /v1/inspect/{contract}`
 
-Query parameters: `key` (repeatable), `durability`.
+Query parameters: `key` (repeatable), `durability`, `estimate_extend`.
+
+`estimate_extend` prices the extension of each reported entry's TTL by that
+many ledgers, exactly as `inspect --estimate-extend` does.
 
 ### `GET /v1/check/{contract}`
 
