@@ -58,7 +58,7 @@ type BatchResult struct {
 // CheckBatch runs up to the requested number of checks and reports them in
 // input order. One check failing to run does not stop the others; its error is
 // recorded and the batch moves on. A check that outlives its own Timeout is
-// reported as one that could not be run. Only a malformed batch or a cancelled
+// reported as one that could not be run. Only a malformed batch or a canceled
 // context returns a Go error.
 func (p *Prober) CheckBatch(ctx context.Context, req BatchRequest) (*BatchResult, error) {
 	if err := validateBatch(req); err != nil {
@@ -143,7 +143,7 @@ func (c NamedCheck) checkTimeout() (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(c.Timeout)
 	if err != nil {
-		return 0, fmt.Errorf("%w: check %q: invalid timeout %q: %v", ErrInvalidBatch, checkName(c), c.Timeout, err)
+		return 0, fmt.Errorf("%w: check %q: invalid timeout %q: %w", ErrInvalidBatch, checkName(c), c.Timeout, err)
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("%w: check %q: timeout must not be negative, got %s", ErrInvalidBatch, checkName(c), d)

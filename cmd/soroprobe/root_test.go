@@ -80,6 +80,38 @@ func runWithFake(t *testing.T, fake *stellartest.Fake, args ...string) (string, 
 	return out.String(), err
 }
 
+// failingWriter rejects every write, standing in for stdout that has gone
+// away — a closed pipe, for example.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+// TestCheckReportsAWriteFailure guards the error path that used to be ignored:
+// a check whose report cannot be written must fail rather than exit 0 as if
+// the report had been printed.
+func TestCheckReportsAWriteFailure(t *testing.T) {
+	fake := stellartest.NewFake(t)
+
+	t.Chdir(t.TempDir())
+	cmd, opts := newRootCmd()
+	opts.newProber = func(cfg config.Config) (*probe.Prober, func(), error) {
+		p, err := probe.New(probe.Options{
+			Client:        fake,
+			SourceAccount: cfg.SourceAccount,
+			Thresholds:    health.Thresholds{Warn: cfg.WarnLedgers, Critical: cfg.CriticalLedgers},
+		})
+		return p, func() {}, err
+	}
+
+	cmd.SetOut(failingWriter{})
+	cmd.SetErr(failingWriter{})
+	cmd.SetArgs([]string{"check", stellartest.SACContract})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write failed")
+}
+
 // writeTempFile writes content to a file in a fresh temp dir and returns its
 // path, so a test can hand the CLI a --file, --baseline or --report argument.
 func writeTempFile(t *testing.T, name, content string) string {
@@ -391,7 +423,7 @@ func TestSimulateReportFlagWritesJSONWhilePrintingText(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out, "SUCCESS", "the text report still goes to the terminal")
 
-	raw, err := os.ReadFile(report)
+	raw, err := os.ReadFile(report) //nolint:gosec // the path is a report this test asked the command to write in t.TempDir.
 	require.NoError(t, err)
 	var result probe.SimulateResult
 	require.NoError(t, json.Unmarshal(raw, &result))
@@ -520,7 +552,7 @@ func TestCheckFileRunsEndToEndAgainstTheFake(t *testing.T) {
 		require.Error(t, err)
 		assertExitCodeOne(t, err)
 
-		raw, readErr := os.ReadFile(report)
+		raw, readErr := os.ReadFile(report) //nolint:gosec // the path is a report this test asked the command to write in t.TempDir.
 		require.NoError(t, readErr)
 		var result probe.BatchResult
 		require.NoError(t, json.Unmarshal(raw, &result))

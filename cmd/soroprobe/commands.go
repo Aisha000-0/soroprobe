@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -92,12 +93,12 @@ the command exits 1.
 			}
 			return cobra.MinimumNArgs(2)(cmd, args)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			report, err := openReport(reportPath)
 			if err != nil {
 				return err
 			}
-			defer report.close()
+			defer func() { err = errors.Join(err, report.close()) }()
 
 			if file != "" {
 				return runSimulateFile(cmd, opts, file, report)
@@ -169,7 +170,7 @@ func readBaseline(path string) (*probe.Baseline, error) {
 		return nil, nil
 	}
 
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // --baseline is an operator-supplied path; reading it is the feature.
 	if err != nil {
 		return nil, fmt.Errorf("read baseline %s: %w", path, err)
 	}
@@ -239,7 +240,7 @@ has already expired — says so instead of quoting a price.
 
 ` + argHelp,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			d, err := parseDurability(durability)
 			if err != nil {
 				return err
@@ -249,7 +250,7 @@ has already expired — says so instead of quoting a price.
 			if err != nil {
 				return err
 			}
-			defer report.close()
+			defer func() { err = errors.Join(err, report.close()) }()
 
 			keys, err := mergeKeys(keyFile, dataKeys)
 			if err != nil {
@@ -362,7 +363,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			}
 			return cobra.ExactArgs(1)(cmd, args)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
 			if err := checkQuietConflicts(quiet, opts.jsonOut, reportPath); err != nil {
 				return err
 			}
@@ -371,7 +372,7 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 			if err != nil {
 				return err
 			}
-			defer report.close()
+			defer func() { err = errors.Join(err, report.close()) }()
 
 			if file != "" {
 				return runCheckFile(cmd, opts, file, checkTimeout, concurrency, report, quiet)
@@ -410,7 +411,9 @@ instead of hiding in the log. --json and --quiet suppress them.`,
 				return err
 			}
 
-			emitSingleCheckOutput(cmd, opts, result, quiet)
+			if err := emitSingleCheckOutput(cmd, opts, result, quiet); err != nil {
+				return err
+			}
 
 			if !result.OK {
 				return &checkFailedError{msg: fmt.Sprintf("check failed for %s", args[0])}
@@ -541,13 +544,13 @@ func applyDefaultTimeout(req *probe.BatchRequest, d time.Duration) {
 // readBatch parses a check file. Unknown fields are rejected, so a typo such
 // as "fn" for "function" fails loudly instead of silently skipping a probe.
 func readBatch(stdin io.Reader, path string) (probe.BatchRequest, error) {
-	var r io.Reader = stdin
+	r := stdin
 	if path != "-" {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // --file is an operator-supplied path; reading it is the feature.
 		if err != nil {
 			return probe.BatchRequest{}, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = f
 	}
 
@@ -603,13 +606,13 @@ func runSimulateFile(cmd *cobra.Command, opts *options, path string, report *rep
 }
 
 func readSimulateBatch(stdin io.Reader, path string) (probe.SimulateBatchRequest, error) {
-	var r io.Reader = stdin
+	r := stdin
 	if path != "-" {
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // --file is an operator-supplied path; reading it is the feature.
 		if err != nil {
 			return probe.SimulateBatchRequest{}, err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		r = f
 	}
 

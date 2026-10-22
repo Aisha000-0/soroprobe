@@ -119,7 +119,7 @@ func encodeU32(literal string) (xdr.ScVal, error) {
 	if err := checkRange(n, 32, false, "u32"); err != nil {
 		return xdr.ScVal{}, err
 	}
-	v := xdr.Uint32(n.Uint64())
+	v := xdr.Uint32(n.Uint64()) //nolint:gosec // checkRange bounded n to an unsigned 32-bit value.
 	return xdr.ScVal{Type: xdr.ScValTypeScvU32, U32: &v}, nil
 }
 
@@ -131,7 +131,7 @@ func encodeI32(literal string) (xdr.ScVal, error) {
 	if err := checkRange(n, 32, true, "i32"); err != nil {
 		return xdr.ScVal{}, err
 	}
-	v := xdr.Int32(n.Int64())
+	v := xdr.Int32(n.Int64()) //nolint:gosec // checkRange bounded n to a signed 32-bit value.
 	return xdr.ScVal{Type: xdr.ScValTypeScvI32, I32: &v}, nil
 }
 
@@ -319,7 +319,7 @@ func scaleByDecimals(value string, decimals uint64, literal string) (*big.Int, e
 			literal, len(fracPart), decimals)
 	}
 
-	digits := intPart + fracPart + strings.Repeat("0", int(decimals)-len(fracPart))
+	digits := intPart + fracPart + strings.Repeat("0", int(decimals)-len(fracPart)) //nolint:gosec // decimals is bounded by maxDecimals in parseInteger.
 	n, ok := new(big.Int).SetString(digits, 10)
 	if !ok {
 		return nil, fmt.Errorf("expected a number, got %q", literal)
@@ -400,7 +400,7 @@ func encodeI128(literal string) (xdr.ScVal, error) {
 		return xdr.ScVal{}, err
 	}
 	w := twosComplementWords(n, 2)
-	parts := xdr.Int128Parts{Hi: xdr.Int64(w[0]), Lo: xdr.Uint64(w[1])}
+	parts := xdr.Int128Parts{Hi: xdr.Int64(w[0]), Lo: xdr.Uint64(w[1])} //nolint:gosec // w holds the two's complement bit pattern; the conversion preserves bits.
 	return xdr.ScVal{Type: xdr.ScValTypeScvI128, I128: &parts}, nil
 }
 
@@ -430,7 +430,7 @@ func encodeI256(literal string) (xdr.ScVal, error) {
 	}
 	w := twosComplementWords(n, 4)
 	parts := xdr.Int256Parts{
-		HiHi: xdr.Int64(w[0]), HiLo: xdr.Uint64(w[1]),
+		HiHi: xdr.Int64(w[0]), HiLo: xdr.Uint64(w[1]), //nolint:gosec // w holds the two's complement bit pattern; the conversion preserves bits.
 		LoHi: xdr.Uint64(w[2]), LoLo: xdr.Uint64(w[3]),
 	}
 	return xdr.ScVal{Type: xdr.ScValTypeScvI256, I256: &parts}, nil

@@ -30,7 +30,7 @@ const (
 	ansiCyan   = "\033[36m"
 )
 
-// colorEnabled reports whether to emit ANSI escapes. It honours the NO_COLOR
+// colorEnabled reports whether to emit ANSI escapes. It honors the NO_COLOR
 // convention and stays quiet when output is redirected.
 func colorEnabled(w io.Writer) bool {
 	if _, set := os.LookupEnv("NO_COLOR"); set {

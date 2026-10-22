@@ -149,7 +149,7 @@ func cors(origins []string) func(http.Handler) http.Handler {
 // without binding a port.
 func (s *Server) Handler() http.Handler { return s.router }
 
-// ListenAndServe runs the server until ctx is cancelled, then shuts it down
+// ListenAndServe runs the server until ctx is canceled, then shuts it down
 // gracefully.
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	srv := &http.Server{
