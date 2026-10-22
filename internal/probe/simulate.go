@@ -28,6 +28,15 @@ type SimulateRequest struct {
 	// any cost figure that is tolerated. It only has an effect alongside a
 	// Baseline.
 	MaxIncreasePercent *float64 `json:"max_increase_percent,omitempty"`
+	// Repeat, when greater than one, simulates the call that many times and
+	// reports the spread between the runs. It is how a noisy estimate is
+	// told apart from a stable one.
+	Repeat int `json:"repeat,omitempty"`
+	// MaxSpreadPercent, when set alongside Repeat, is the largest spread in
+	// any cost figure, as a percentage of its minimum, that is tolerated
+	// before the call is reported as noisy. A nil value reports the spread
+	// without judging it.
+	MaxSpreadPercent *float64 `json:"max_spread_percent,omitempty"`
 }
 
 // ErrBaselineMismatch is returned when a baseline names a different contract
@@ -236,6 +245,10 @@ type SimulateResult struct {
 	// was supplied.
 	Comparison *CostComparison `json:"comparison,omitempty"`
 
+	// Spread describes how the cost varied across repeated runs, when
+	// --repeat asked for more than one.
+	Spread *SpreadReport `json:"spread,omitempty"`
+
 	// RestoreRequired is set when archived entries block the call.
 	RestoreRequired *RestoreInfo `json:"restore_required,omitempty"`
 
@@ -276,6 +289,10 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		return nil, err
 	}
 
+	if req.Repeat < 1 {
+		req.Repeat = 1
+	}
+
 	envelope, err := stellar.BuildInvocationTx(stellar.InvocationParams{
 		SourceAccount: p.source,
 		Contract:      contract,
@@ -286,24 +303,51 @@ func (p *Prober) Simulate(ctx context.Context, req SimulateRequest) (*SimulateRe
 		return nil, err
 	}
 
-	resp, err := p.client.SimulateTransaction(ctx, protocol.SimulateTransactionRequest{
-		Transaction: envelope,
-	})
-	if err != nil {
-		return nil, err
+	costs := make([]Cost, 0, req.Repeat)
+	footprints := make([]Footprint, 0, req.Repeat)
+	var result *SimulateResult
+	for i := 0; i < req.Repeat; i++ {
+		resp, err := p.client.SimulateTransaction(ctx, protocol.SimulateTransactionRequest{
+			Transaction: envelope,
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		built, err := p.buildSimulateResult(req, resp)
+		if err != nil {
+			return nil, err
+		}
+		// The last run is the one reported in full; the earlier runs only
+		// contribute to the spread. The call is deterministic in the
+		// success case, so they agree on everything the report shows.
+		result = built
+		costs = append(costs, built.Cost)
+		footprints = append(footprints, built.Footprint)
 	}
 
-	result, err := p.buildSimulateResult(req, resp)
-	if err != nil {
-		return nil, err
-	}
 	result.Signature = typed.signature
 	result.ABINote = typed.note
 	if typed.changed {
 		result.EncodedArgs = typed.args
 	}
+
+	// A repeated run is judged by its worst case: the maximum of every
+	// figure cannot make a flaky cost check pass by luck.
+	if req.Repeat > 1 {
+		spread := SpreadCost(costs, footprints, req.MaxSpreadPercent)
+		result.Spread = &spread
+	}
+
 	if req.Baseline != nil {
-		comparison := CompareCost(req.Baseline.Cost, result.Cost, req.MaxIncreasePercent)
+		// With repeated runs the comparison is against the worst case
+		// observed, not the last sample: a flaky estimate must not make a
+		// cost check pass by luck.
+		current := result.Cost
+		if result.Spread != nil {
+			current = result.Spread.Max
+		}
+		comparison := CompareCost(req.Baseline.Cost, current, req.MaxIncreasePercent)
 		result.Comparison = &comparison
 	}
 	return result, nil

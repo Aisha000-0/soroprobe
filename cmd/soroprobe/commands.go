@@ -54,6 +54,8 @@ func newSimulateCmd(opts *options) *cobra.Command {
 	var file string
 	var baselinePath string
 	var maxIncrease string
+	var repeat int
+	var maxSpread string
 
 	cmd := &cobra.Command{
 		Use:   "simulate <contract-id> <function> [args...] | simulate --file <calls.json>",
@@ -76,6 +78,13 @@ a different call is rejected rather than compared.
 tolerated, as a percentage ("10%"). When a figure grows by more than that,
 the command exits 1.
 
+--repeat runs the same simulation N times and reports the spread between the
+runs, so a noisy estimate is told apart from a stable one. --max-spread sets
+the largest spread, as a percentage of the minimum, that is tolerated before
+the run is flagged as noisy and the command exits 1. When --baseline is also
+given, the comparison uses the maximum of the repeated runs, so a flaky
+estimate cannot make a cost check pass by luck.
+
 ` + argHelp,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if file != "" {
@@ -87,6 +96,12 @@ the command exits 1.
 				}
 				if maxIncrease != "" {
 					return fmt.Errorf("--max-increase compares one call, so it cannot be used with --file")
+				}
+				if repeat > 1 {
+					return fmt.Errorf("--repeat simulates one call, so it cannot be used with --file")
+				}
+				if maxSpread != "" {
+					return fmt.Errorf("--max-spread judges repeated runs, so it cannot be used with --file")
 				}
 				return nil
 			}
@@ -111,6 +126,10 @@ the command exits 1.
 			if err != nil {
 				return err
 			}
+			spread, err := parseMaxSpread(maxSpread, repeat)
+			if err != nil {
+				return err
+			}
 
 			p, cleanup, err := opts.prober()
 			if err != nil {
@@ -124,6 +143,8 @@ the command exits 1.
 				Args:               args[2:],
 				Baseline:           baseline,
 				MaxIncreasePercent: threshold,
+				Repeat:             repeat,
+				MaxSpreadPercent:   spread,
 			})
 			if err != nil {
 				return err
@@ -148,6 +169,13 @@ the command exits 1.
 				return &checkFailedError{msg: fmt.Sprintf(
 					"the cost grew by more than %s", formatPercent(*result.Comparison.MaxIncreasePercent))}
 			}
+			// A noisy estimate is a failed measurement, not a failed call:
+			// its own exit keeps it apart from a check failure.
+			if result.Spread != nil && result.Spread.Noisy {
+				return &checkFailedError{msg: fmt.Sprintf(
+					"the cost varied by more than %s across %d runs",
+					formatPercent(*result.Spread.MaxSpreadPercent), result.Spread.Runs)}
+			}
 			return nil
 		},
 	}
@@ -156,6 +184,8 @@ the command exits 1.
 	cmd.Flags().StringVarP(&file, "file", "f", "", `run calls listed in a JSON file ("-" for stdin)`)
 	cmd.Flags().StringVar(&baselinePath, "baseline", "", "compare the cost against a saved simulation report (a previous --json output)")
 	cmd.Flags().StringVar(&maxIncrease, "max-increase", "", `fail when a cost figure grows by more than this percentage (e.g. "10%")`)
+	cmd.Flags().IntVar(&repeat, "repeat", 1, "simulate the call this many times and report the spread between runs")
+	cmd.Flags().StringVar(&maxSpread, "max-spread", "", `fail when the spread across repeated runs exceeds this percentage of the minimum (e.g. "5%")`)
 	return cmd
 }
 
@@ -207,6 +237,31 @@ func parseMaxIncrease(s string, hasBaseline bool) (*float64, error) {
 // formatPercent renders a percentage threshold.
 func formatPercent(v float64) string {
 	return fmt.Sprintf("%g%%", v)
+}
+
+// parseMaxSpread parses the --max-spread threshold.
+//
+// Like --max-increase the percentage sign is optional, but unlike it a spread
+// threshold needs repeated runs: with one run there is no spread to judge.
+// An empty string means "do not judge", leaving the spread reported but not
+// flagged, which is what a bare --repeat asks for.
+func parseMaxSpread(s string, repeat int) (*float64, error) {
+	if s == "" {
+		return nil, nil
+	}
+	if repeat < 2 {
+		return nil, fmt.Errorf("--max-spread needs --repeat of at least 2, which is what it judges")
+	}
+
+	trimmed := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(s), "%"))
+	value, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil {
+		return nil, fmt.Errorf("expected a percentage, got %q", s)
+	}
+	if value < 0 {
+		return nil, fmt.Errorf("a percentage cannot be negative, got %q", s)
+	}
+	return &value, nil
 }
 
 func newInspectCmd(opts *options) *cobra.Command {

@@ -159,6 +159,10 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 		renderCostComparison(bw, s, r.Comparison)
 	}
 
+	if r.Spread != nil {
+		renderCostSpread(bw, s, r.Spread)
+	}
+
 	if r.RestoreRequired != nil {
 		bw.printf("\n%s\n", s.red("RESTORE REQUIRED"))
 		bw.printf("  This call touches archived entries. They must be restored before it\n")
@@ -191,6 +195,33 @@ func renderCostComparison(bw *bufWriter, s styler, c *probe.CostComparison) {
 	if c.Exceeded && c.MaxIncreasePercent != nil {
 		bw.printf("  %s\n", s.red(fmt.Sprintf(
 			"a cost figure grew by more than %s", formatPercent(*c.MaxIncreasePercent))))
+	}
+}
+
+// renderCostSpread prints the range each cost figure took across repeated runs.
+//
+// The percentage is shown only when the minimum was non-zero, for the same
+// reason a baseline comparison omits it: there is no percentage spread from
+// nothing. A footprint that changed between runs is listed too, because it is
+// usually what made the cost move.
+func renderCostSpread(bw *bufWriter, s styler, sp *probe.SpreadReport) {
+	bw.printf("\n%s\n", s.bold(fmt.Sprintf("cost across %d runs", sp.Runs)))
+	for _, f := range sp.Figures {
+		percent := "n/a"
+		if f.Percent != nil {
+			percent = fmt.Sprintf("%.1f%%", *f.Percent)
+		}
+		bw.printf("  %-22s %d..%d  (spread %d, %s)\n", f.Name, f.Min, f.Max, f.Spread, percent)
+	}
+	if len(sp.FootprintChanges) > 0 {
+		bw.printf("  %s\n", s.dim("footprint changed between runs:"))
+		for _, k := range sp.FootprintChanges {
+			bw.printf("    %s\n", k)
+		}
+	}
+	if sp.Noisy && sp.MaxSpreadPercent != nil {
+		bw.printf("  %s\n", s.red(fmt.Sprintf(
+			"the cost varied by more than %s across identical runs", formatPercent(*sp.MaxSpreadPercent))))
 	}
 }
 

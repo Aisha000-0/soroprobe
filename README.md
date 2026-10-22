@@ -248,6 +248,8 @@ value, resource cost and ledger footprint.
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 | `--baseline <path>` | Compare the cost against a saved simulation report (a previous `--json` output). |
 | `--max-increase <pct>` | Fail (exit 1) when a cost figure grows by more than this percentage. |
+| `--repeat <n>` | Simulate the call `n` times and report the spread between the runs. |
+| `--max-spread <pct>` | Fail (exit 1) when the spread across repeated runs exceeds this percentage. |
 
 A call the contract rejects is **not** a tool error — it exits 0 and reports
 `FAILED` with the host's error text. Use `check` if you want a non-zero exit.
@@ -289,6 +291,26 @@ The percentage sign is optional, so `10` and `10%` mean the same thing. A
 figure that grew from a baseline of zero has no percentage to compare
 against, so it counts as an increase however large the threshold is: from
 nothing to something is not a small change.
+
+**Nondeterministic costs.** A single simulation can be a noisy sample — the
+state moved, or the node was busy — and a baseline taken from one run produces
+a flaky check. `--repeat` runs the same call several times and reports the
+range each figure took:
+
+```
+$ soroprobe simulate CDLZ… transfer … --repeat 5
+cost across 5 runs
+  cpu instructions       127569..139264  (spread 11695, 9.2%)
+  disk read bytes        0..0            (spread 0, n/a)
+  write bytes            0..0            (spread 0, n/a)
+  resource fee (stroops) 12279..13400    (spread 1121, 9.1%)
+```
+
+`--max-spread` turns that into a gate: the command exits **1** when any figure
+spreads by more than the threshold across identical runs, because a check you
+cannot reproduce is not a passing check. With `--repeat` **and** `--baseline`
+together, the comparison uses the **maximum** of the repeated runs, so a flaky
+estimate cannot slip under the threshold by luck.
 
 ### `soroprobe inspect <contract-id>`
 
