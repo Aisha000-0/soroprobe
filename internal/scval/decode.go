@@ -72,7 +72,7 @@ func Decode(v xdr.ScVal) (any, error) {
 		if v.I128 == nil {
 			return nil, fmt.Errorf("i128 ScVal has no value")
 		}
-		return wordsToBigInt([]uint64{uint64(v.I128.Hi), uint64(v.I128.Lo)}, true).String(), nil
+		return wordsToBigInt([]uint64{uint64(v.I128.Hi), uint64(v.I128.Lo)}, true).String(), nil //nolint:gosec // reinterpreting a signed word as an unsigned bit pattern is exact and intended.
 
 	case xdr.ScValTypeScvU256:
 		if v.U256 == nil {
@@ -85,7 +85,7 @@ func Decode(v xdr.ScVal) (any, error) {
 		if v.I256 == nil {
 			return nil, fmt.Errorf("i256 ScVal has no value")
 		}
-		words := []uint64{uint64(v.I256.HiHi), uint64(v.I256.HiLo), uint64(v.I256.LoHi), uint64(v.I256.LoLo)}
+		words := []uint64{uint64(v.I256.HiHi), uint64(v.I256.HiLo), uint64(v.I256.LoHi), uint64(v.I256.LoLo)} //nolint:gosec // reinterpreting signed words as unsigned bit patterns is exact and intended.
 		return wordsToBigInt(words, true).String(), nil
 
 	case xdr.ScValTypeScvBytes:

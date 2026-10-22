@@ -22,6 +22,7 @@ Useful targets:
 | --- | --- |
 | `make test` | Run the suite |
 | `make test-race` | Run the suite under the race detector |
+| `make lint` | Run golangci-lint (pinned to the version CI uses) |
 | `make cover` | Report total coverage |
 | `make fixtures` | Re-record test fixtures from the live testnet |
 | `make help` | List everything |
@@ -121,7 +122,7 @@ version and the date verified. If field names moved, the compile will tell you.
 
 ## Style
 
-- Idiomatic Go. `make fmt` and `make vet` must be clean.
+- Idiomatic Go. `make fmt`, `make vet` and `make lint` must be clean.
 - Small, focused packages with a clear job.
 - Comments explain **why**, not what. If a decision looks arbitrary, say what
   the alternative was and why it lost.

@@ -193,5 +193,5 @@ func TestRPCClientRespectsCallerDeadline(t *testing.T) {
 	cancel()
 
 	_, err := client.GetLatestLedger(ctx)
-	require.Error(t, err, "a cancelled context must not be ignored")
+	require.Error(t, err, "a canceled context must not be ignored")
 }

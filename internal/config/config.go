@@ -145,7 +145,7 @@ func Load(path string) (Config, error) {
 }
 
 func applyFile(cfg *Config, path string, required bool) error {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) //nolint:gosec // the config path comes from --config or SOROPROBE_CONFIG; reading it is the feature.
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && !required {
 			return nil

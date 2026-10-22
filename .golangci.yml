@@ -1,0 +1,49 @@
+# golangci-lint configuration for SoroProbe.
+#
+# The default set (errcheck, govet, ineffassign, staticcheck, unused) is the
+# baseline. The linters enabled below cover the areas the defaults miss for a
+# tool whose job is decoding untrusted network responses and reporting on them.
+version: "2"
+
+linters:
+  default: standard
+
+  enable:
+    # gosec: flags unsafe conversions, weak crypto, unchecked file paths and
+    # other security-relevant patterns. SoroProbe parses data from a remote RPC
+    # endpoint, so its input handling should be reviewed by a security linter.
+    - gosec
+
+    # bodyclose: an HTTP response body that is not closed leaks the underlying
+    # connection. Every RPC call in this project makes an HTTP request, so this
+    # is checked rather than assumed.
+    - bodyclose
+
+    # errorlint: catches comparisons with ==/!= on wrapped errors, type
+    # assertions on errors, and %v where %w is needed. Without it, errors that
+    # are wrapped for context stop matching their sentinel values.
+    - errorlint
+
+    # misspell: typo checking for comments and strings. Documentation and error
+    # messages are part of the interface a probe reports, so typos there are
+    # user-visible defects.
+    - misspell
+
+    # unconvert: removes conversions that do not change the type. They are
+    # noise that hides the conversions that do matter.
+    - unconvert
+
+  settings:
+    misspell:
+      # The project and its documentation use US spelling.
+      locale: US
+
+  exclusions:
+    # Generated code is not ours to fix.
+    generated: lax
+
+issues:
+  # Report every occurrence. The defaults stop after three instances of the
+  # same finding, which can leave the rest of a repeated mistake unreported.
+  max-issues-per-linter: 0
+  max-same-issues: 0
