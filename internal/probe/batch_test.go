@@ -135,11 +135,11 @@ func TestCheckBatchStopsOnCancel(t *testing.T) {
 	cancel()
 	_, err := p.CheckBatch(ctx, probe.BatchRequest{Checks: []probe.NamedCheck{named("a", stellartest.SACContract, "")}})
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Empty(t, fake.EntryRequests, "a cancelled batch sends nothing")
+	assert.Empty(t, fake.EntryRequests, "a canceled batch sends nothing")
 }
 
 // hungClient makes the first GetLedgerEntries call block until its context is
-// done, modelling an upstream that never answers. Later calls reach the
+// done, modeling an upstream that never answers. Later calls reach the
 // fixtures, so the batch can be shown to keep going after a check times out.
 type hungClient struct {
 	*stellartest.Fake

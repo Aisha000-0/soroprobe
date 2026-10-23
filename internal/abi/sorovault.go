@@ -40,7 +40,7 @@ func NewSoroVault(baseURL string, client *http.Client, timeout time.Duration) (*
 }
 
 // NetworkName maps a network passphrase onto the label SoroVault files
-// contracts under. Unrecognised passphrases are used verbatim, which is also
+// contracts under. Unrecognized passphrases are used verbatim, which is also
 // what SoroVault does.
 func NetworkName(passphrase string) string {
 	switch passphrase {
@@ -72,7 +72,7 @@ func (s *SoroVault) Interface(ctx context.Context, network, contractID string) (
 	if err != nil {
 		return nil, fmt.Errorf("sorovault: %w", err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // the body has been read; a close error is not actionable here.
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {

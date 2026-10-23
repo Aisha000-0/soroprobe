@@ -42,7 +42,7 @@ func main() {
 }
 
 func run(rpcURL, outDir, sac, wasm, undeployed, source string) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -206,7 +206,7 @@ func write(dir, name string, v any) error {
 		return fmt.Errorf("marshal %s: %w", name, err)
 	}
 	raw = append(raw, '\n')
-	return os.WriteFile(filepath.Join(dir, name), raw, 0o644)
+	return os.WriteFile(filepath.Join(dir, name), raw, 0o600)
 }
 
 func truncate(s string, n int) string {
