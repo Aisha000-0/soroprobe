@@ -169,6 +169,7 @@ func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
 		Logger:  log,
 		ABI:     source,
 		Network: abi.NetworkName(cfg.NetworkPassphrase),
+		BaseFee: cfg.BaseFee,
 	})
 	if err != nil {
 		_ = client.Close()

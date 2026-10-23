@@ -12,6 +12,42 @@
   ],
   "security": [],
   "paths": {
+    "/readyz": {
+      "get": {
+        "summary": "Readiness check",
+        "description": "Reports whether the configured RPC endpoint is reachable and serves the configured network. Results are reused for a few seconds so frequent probes do not multiply RPC traffic.",
+        "operationId": "readyz",
+        "responses": {
+          "200": {
+            "description": "The RPC endpoint is ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ready" }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The RPC endpoint is unreachable or serves a different network",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "unready" },
+                    "reason": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Liveness check",

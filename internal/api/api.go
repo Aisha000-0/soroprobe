@@ -103,6 +103,7 @@ func New(opts Options) *Server {
 	}
 
 	r.Get("/healthz", s.handleLiveness)
+	r.Get("/openapi.json", s.handleOpenAPI)
 	r.Get("/readyz", s.handleReadiness)
 	r.Route("/v1", func(r chi.Router) {
 		// Answers reflect live on-chain state, so they must not be replayed

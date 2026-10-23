@@ -288,7 +288,7 @@ func ToBigInt(v xdr.ScVal) (*big.Int, bool) {
 		if v.I128 == nil {
 			return nil, false
 		}
-		return wordsToBigInt([]uint64{uint64(v.I128.Hi), uint64(v.I128.Lo)}, true), true
+		return wordsToBigInt([]uint64{uint64(v.I128.Hi), uint64(v.I128.Lo)}, true), true //nolint:gosec // two's-complement words: the bit pattern is reinterpreted on purpose
 	case xdr.ScValTypeScvU256:
 		if v.U256 == nil {
 			return nil, false
@@ -298,7 +298,7 @@ func ToBigInt(v xdr.ScVal) (*big.Int, bool) {
 		if v.I256 == nil {
 			return nil, false
 		}
-		return wordsToBigInt([]uint64{uint64(v.I256.HiHi), uint64(v.I256.HiLo), uint64(v.I256.LoHi), uint64(v.I256.LoLo)}, true), true
+		return wordsToBigInt([]uint64{uint64(v.I256.HiHi), uint64(v.I256.HiLo), uint64(v.I256.LoHi), uint64(v.I256.LoLo)}, true), true //nolint:gosec // two's-complement words: the bit pattern is reinterpreted on purpose
 	default:
 		return nil, false
 	}
