@@ -121,7 +121,7 @@ dirs_of() { grep -vE '\.(md|txt)$' | sed -E 's#/[^/]*$##; t; s#.*#.#' | sort -u;
 
 # unaffected_by_main reports whether main has changed nothing since the PR's
 # merge base that could alter the PR's build: no shared directory, and no
-# module or CI definition change. Main is read from origin/main, which is
+# module or workflow definition change. Main is read from origin/main, which is
 # refreshed after every merge in this run.
 unaffected_by_main() {
   local head="$1" pr_files="$2" base changed
@@ -129,7 +129,8 @@ unaffected_by_main() {
   base=$(git merge-base origin/main "$head" 2>/dev/null) || return 1
   changed=$(git diff --name-only "$base" origin/main)
   [ -z "$changed" ] && return 0
-  grep -qE '(^|/)go\.(mod|sum)$|^\.github/|(^|/)package(-lock)?\.json$' <<<"$changed" && return 1
+  # Workflow files, not the bot's own scripts, decide how a PR is built.
+  grep -qE '(^|/)go\.(mod|sum)$|^\.github/workflows/|(^|/)package(-lock)?\.json$' <<<"$changed" && return 1
   [ -z "$(comm -12 <(dirs_of <<<"$changed") <(dirs_of <<<"$pr_files"))" ]
 }
 
