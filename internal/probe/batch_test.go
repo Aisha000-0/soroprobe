@@ -37,6 +37,24 @@ func TestCheckBatchAllPass(t *testing.T) {
 	assert.True(t, result.Items[0].Result.OK)
 }
 
+func TestCheckBatchConcurrentKeepsInputOrder(t *testing.T) {
+	t.Parallel()
+	p := newProber(t, stellartest.NewFake(t), health.DefaultThresholds)
+	checks := []probe.NamedCheck{
+		named("first", stellartest.WasmContract, ""),
+		named("second", stellartest.SACContract, "decimals"),
+		named("third", stellartest.WasmContract, "decimals"),
+	}
+
+	result, err := p.CheckBatch(context.Background(), probe.BatchRequest{Checks: checks, Concurrency: 3})
+	require.NoError(t, err)
+	require.Len(t, result.Items, len(checks))
+	for i, item := range result.Items {
+		assert.Equal(t, checks[i].Name, item.Name)
+		assert.NotNil(t, item.Result)
+	}
+}
+
 func TestCheckBatchUnhealthyIsNotAnError(t *testing.T) {
 	t.Parallel()
 	p := newProber(t, stellartest.NewFake(t), health.DefaultThresholds)
@@ -117,11 +135,11 @@ func TestCheckBatchStopsOnCancel(t *testing.T) {
 	cancel()
 	_, err := p.CheckBatch(ctx, probe.BatchRequest{Checks: []probe.NamedCheck{named("a", stellartest.SACContract, "")}})
 	assert.ErrorIs(t, err, context.Canceled)
-	assert.Empty(t, fake.EntryRequests, "a cancelled batch sends nothing")
+	assert.Empty(t, fake.EntryRequests, "a canceled batch sends nothing")
 }
 
 // hungClient makes the first GetLedgerEntries call block until its context is
-// done, modelling an upstream that never answers. Later calls reach the
+// done, modeling an upstream that never answers. Later calls reach the
 // fixtures, so the batch can be shown to keep going after a check times out.
 type hungClient struct {
 	*stellartest.Fake

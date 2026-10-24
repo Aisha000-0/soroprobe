@@ -30,7 +30,7 @@ const (
 	ansiCyan   = "\033[36m"
 )
 
-// colorEnabled reports whether to emit ANSI escapes. It honours the NO_COLOR
+// colorEnabled reports whether to emit ANSI escapes. It honors the NO_COLOR
 // convention and stays quiet when output is redirected.
 func colorEnabled(w io.Writer) bool {
 	if _, set := os.LookupEnv("NO_COLOR"); set {
@@ -144,6 +144,25 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	bw.printf("  write bytes        %d\n", r.Cost.WriteBytes)
 	bw.printf("  resource fee       %s\n", stroops(r.Cost.ResourceFee))
 	bw.printf("  min resource fee   %s\n", stroops(r.Cost.MinResourceFee))
+	bw.printf("  estimated total fee %s\n", stroops(r.Cost.EstimatedTotalFee))
+
+	if len(r.Auth) > 0 {
+		bw.printf("\n%s\n", s.bold("authorizations"))
+		for _, a := range r.Auth {
+			if a.RawXDR != "" {
+				bw.printf("  %s %s\n", s.dim("raw xdr:"), a.RawXDR)
+				continue
+			}
+			src := ""
+			if a.IsSourceAccount {
+				src = s.dim(" (source account)")
+			}
+			bw.printf("  %s%s\n", s.cyan(a.Address), src)
+			if a.RootInvocation != nil {
+				renderAuthorizedInvocation(bw, s, a.RootInvocation, "    ")
+			}
+		}
+	}
 
 	if n := len(r.Footprint.ReadOnly) + len(r.Footprint.ReadWrite); n > 0 {
 		bw.printf("\n%s\n", s.bold("footprint"))
@@ -153,6 +172,14 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 		for _, k := range r.Footprint.ReadWrite {
 			bw.printf("  %s %s\n", s.cyan("write"), k)
 		}
+	}
+
+	if r.Comparison != nil {
+		renderCostComparison(bw, s, r.Comparison)
+	}
+
+	if r.Spread != nil {
+		renderCostSpread(bw, s, r.Spread)
 	}
 
 	if r.RestoreRequired != nil {
@@ -167,6 +194,88 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 
 	bw.printf("\n%s\n", s.dim(fmt.Sprintf("simulated against ledger %d", r.LatestLedger)))
 	return bw.err
+}
+
+// renderCostComparison prints each cost figure with its change against the
+// baseline, in absolute and percentage terms.
+//
+// The percentage is omitted rather than guessed at when the baseline figure
+// was zero: there is no percentage change from nothing, and inventing one
+// would make an increase look smaller than it is.
+func renderCostComparison(bw *bufWriter, s styler, c *probe.CostComparison) {
+	bw.printf("\n%s\n", s.bold("cost compared to the baseline"))
+	for _, f := range c.Figures {
+		percent := "n/a"
+		if f.Percent != nil {
+			percent = fmt.Sprintf("%+.1f%%", *f.Percent)
+		}
+		bw.printf("  %-22s %d -> %d  (%+d, %s)\n", f.Name, f.Baseline, f.Current, f.Delta, percent)
+	}
+	if c.Exceeded && c.MaxIncreasePercent != nil {
+		bw.printf("  %s\n", s.red(fmt.Sprintf(
+			"a cost figure grew by more than %s", formatPercent(*c.MaxIncreasePercent))))
+	}
+}
+
+// renderCostSpread prints the range each cost figure took across repeated runs.
+//
+// The percentage is shown only when the minimum was non-zero, for the same
+// reason a baseline comparison omits it: there is no percentage spread from
+// nothing. A footprint that changed between runs is listed too, because it is
+// usually what made the cost move.
+func renderCostSpread(bw *bufWriter, s styler, sp *probe.SpreadReport) {
+	bw.printf("\n%s\n", s.bold(fmt.Sprintf("cost across %d runs", sp.Runs)))
+	for _, f := range sp.Figures {
+		percent := "n/a"
+		if f.Percent != nil {
+			percent = fmt.Sprintf("%.1f%%", *f.Percent)
+		}
+		bw.printf("  %-22s %d..%d  (spread %d, %s)\n", f.Name, f.Min, f.Max, f.Spread, percent)
+	}
+	if len(sp.FootprintChanges) > 0 {
+		bw.printf("  %s\n", s.dim("footprint changed between runs:"))
+		for _, k := range sp.FootprintChanges {
+			bw.printf("    %s\n", k)
+		}
+	}
+	if sp.Noisy && sp.MaxSpreadPercent != nil {
+		bw.printf("  %s\n", s.red(fmt.Sprintf(
+			"the cost varied by more than %s across identical runs", formatPercent(*sp.MaxSpreadPercent))))
+	}
+}
+
+func renderSimulateBatch(w io.Writer, r *probe.SimulateBatchResult) error {
+	bw := &bufWriter{w: w}
+	bw.printf("%-24s %-8s %-48s %-14s %s\n", "NAME", "SUCCESS", "RETURN VALUE", "INSTRUCTIONS", "FEE")
+	for _, item := range r.Items {
+		if item.Error != "" {
+			bw.printf("%-24s %-8s %-48s %-14s %s\n", truncate(item.Name, 24), "error", truncate(item.Error, 48), "-", "-")
+			continue
+		}
+		value := item.Result.Error
+		if item.Result.ReturnValue != nil {
+			encoded, err := json.Marshal(item.Result.ReturnValue)
+			if err != nil {
+				return err
+			}
+			value = string(encoded)
+		}
+		if value == "" {
+			value = "(void)"
+		}
+		bw.printf("%-24s %-8t %-48s %-14d %s\n",
+			truncate(item.Name, 24), item.Result.Success, truncate(value, 48),
+			item.Result.Cost.Instructions, stroops(item.Result.Cost.ResourceFee))
+	}
+	return bw.err
+}
+
+func truncate(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-3]) + "..."
 }
 
 // indent prefixes every line of s, so multi-line RPC errors stay aligned.
@@ -215,9 +324,34 @@ func renderInspect(w io.Writer, r *probe.InspectResult) error {
 		bw.printf("  %s\n", string(encoded))
 	}
 
+	if len(r.ExtendEstimates) > 0 {
+		renderExtendEstimates(bw, s, r.ExtendEstimates)
+	}
+
 	bw.printf("\n%s %s\n", s.bold("overall"), s.status(r.Status))
 	bw.printf("%s\n", s.dim(fmt.Sprintf("checked at ledger %d", r.LatestLedger)))
 	return bw.err
+}
+
+// renderExtendEstimates prints what it would cost to keep each entry alive.
+//
+// An entry that cannot be extended says so instead of quoting a price: a
+// number for an entry that is not there would be worse than no number.
+func renderExtendEstimates(bw *bufWriter, s styler, estimates []probe.ExtendEstimate) {
+	bw.printf("\n%s %s\n", s.bold("cost to extend"), s.dim("(simulated; nothing is submitted)"))
+	for _, e := range estimates {
+		label := e.Kind
+		if e.Key != "" {
+			label = e.Kind + " " + e.Key
+		}
+		if e.Note != "" {
+			bw.printf("  %-22s %s\n", label, s.dim(e.Note))
+			continue
+		}
+		bw.printf("  %-22s %s  %s\n", label,
+			stroops(e.ResourceFee),
+			s.dim(fmt.Sprintf("to ledger %d, %d ledgers", e.ExtendTo, e.Ledgers)))
+	}
 }
 
 func renderEntry(bw *bufWriter, s styler, label string, e probe.EntryReport) {
@@ -274,6 +408,26 @@ func renderBatch(w io.Writer, r *probe.BatchResult) error {
 
 	bw.printf("\n%s %d passed, %d failed, %d could not run\n", s.bold("result"), passed, failed, errored)
 	return bw.err
+}
+
+func renderAuthorizedInvocation(bw *bufWriter, s styler, inv *probe.AuthorizedInvocation, indent string) {
+	var args []string
+	for _, arg := range inv.Args {
+		b, err := json.Marshal(arg)
+		if err != nil {
+			args = append(args, fmt.Sprint(arg))
+		} else {
+			args = append(args, string(b))
+		}
+	}
+	target := inv.Function
+	if inv.ContractID != "" {
+		target = inv.ContractID + "::" + inv.Function
+	}
+	bw.printf("%s%s(%s)\n", indent, target, strings.Join(args, ", "))
+	for _, sub := range inv.SubInvocations {
+		renderAuthorizedInvocation(bw, s, &sub, indent+"  ")
+	}
 }
 
 // firstNotPassing describes the first step with the given outcome, or

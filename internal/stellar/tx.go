@@ -74,3 +74,81 @@ func BuildInvocationTx(p InvocationParams) (string, error) {
 	}
 	return envelope, nil
 }
+
+// ExtendParams describes a TTL extension to be estimated.
+type ExtendParams struct {
+	// SourceAccount is the public key ("G...") used as the transaction source.
+	SourceAccount string
+	// Key is the ledger entry whose TTL is extended. It is the only entry in
+	// the footprint, so the fee covers that entry alone.
+	Key xdr.LedgerKey
+	// ExtendTo is the ledger the entry's TTL is set to.
+	ExtendTo uint32
+}
+
+// extendResourceLimits are the resource limits declared on an extension.
+//
+// The RPC recomputes the resources during a simulation and reports what the
+// operation really costs, so these are only there to keep the transaction
+// well-formed. They match what the Stellar CLI declares for the same
+// operation.
+var extendResourceLimits = xdr.SorobanResources{
+	Instructions:  0,
+	DiskReadBytes: 0,
+	WriteBytes:    0,
+}
+
+// BuildExtendFootprintTx assembles an unsigned transaction envelope holding a
+// single ExtendFootprintTTL operation for one ledger entry.
+//
+// The entry sits in the read-only footprint, which is where the Stellar CLI
+// puts it: the operation changes the entry's TTL, not its contents, and the
+// host extends the entries of both footprint sets.
+//
+// The envelope is never signed and never submitted, exactly like the
+// invocation envelope. Simulation reads the source account only to build a
+// well-formed transaction, so the placeholder account SoroProbe uses works
+// here too.
+func BuildExtendFootprintTx(p ExtendParams) (string, error) {
+	if p.SourceAccount == "" {
+		return "", fmt.Errorf("source account is required to build a transaction to simulate")
+	}
+
+	op := &txnbuild.ExtendFootprintTtl{
+		ExtendTo:      p.ExtendTo,
+		SourceAccount: p.SourceAccount,
+		Ext: xdr.TransactionExt{
+			V: 1,
+			SorobanData: &xdr.SorobanTransactionData{
+				Resources: xdr.SorobanResources{
+					Footprint: xdr.LedgerFootprint{
+						ReadOnly:  []xdr.LedgerKey{p.Key},
+						ReadWrite: []xdr.LedgerKey{},
+					},
+					Instructions:  extendResourceLimits.Instructions,
+					DiskReadBytes: extendResourceLimits.DiskReadBytes,
+					WriteBytes:    extendResourceLimits.WriteBytes,
+				},
+				ResourceFee: 0,
+			},
+		},
+	}
+
+	account := txnbuild.NewSimpleAccount(p.SourceAccount, 0)
+	tx, err := txnbuild.NewTransaction(txnbuild.TransactionParams{
+		SourceAccount:        &account,
+		IncrementSequenceNum: true,
+		Operations:           []txnbuild.Operation{op},
+		BaseFee:              txnbuild.MinBaseFee,
+		Preconditions:        txnbuild.Preconditions{TimeBounds: txnbuild.NewInfiniteTimeout()},
+	})
+	if err != nil {
+		return "", fmt.Errorf("build transaction: %w", err)
+	}
+
+	envelope, err := tx.Base64()
+	if err != nil {
+		return "", fmt.Errorf("encode transaction envelope: %w", err)
+	}
+	return envelope, nil
+}

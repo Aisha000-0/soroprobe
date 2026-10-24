@@ -41,7 +41,7 @@ func escapeAnnotationProperty(s string) string {
 // writeAnnotation emits one workflow command, which GitHub renders as an
 // annotation on the run summary.
 func writeAnnotation(w io.Writer, level, title, message string) {
-	fmt.Fprintf(w, "::%s title=%s::%s\n",
+	fmt.Fprintf(w, "::%s title=%s::%s\n", //nolint:errcheck // annotations are best-effort output; a broken writer has no remedy.
 		level,
 		escapeAnnotationProperty(title),
 		escapeAnnotationData(message),
