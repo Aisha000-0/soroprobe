@@ -273,6 +273,47 @@ A maintainer will review it."
     fi
   fi
 
+  # Substance: a PR that closes issues must change enough to plausibly do
+  # what they ask. A one-line comment passes every test, so CI alone cannot
+  # tell finished work from a placeholder that only claims an issue's points.
+  # Count added lines that are not blank and not comment-only, in code and
+  # config files; Markdown counts only towards documentation issues. Each
+  # closed issue needs at least 5 (trivial), 20 (medium) or 50 (high) such
+  # lines. Falling short holds the PR for a maintainer — it is not rejected.
+  closes=$(gh pr view "$pr" -R "$repo" --json closingIssuesReferences \
+    --jq '.closingIssuesReferences[].number' 2>/dev/null || true)
+  if [ -n "$closes" ]; then
+    need=0 docs=false claimed=""
+    for issue in $closes; do
+      labels=$(gh issue view "$issue" -R "$repo" --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || true)
+      case ",$labels," in
+        *",complexity: high,"*) need=$((need + 50)) ;;
+        *",complexity: medium,"*) need=$((need + 20)) ;;
+        *) need=$((need + 5)) ;;
+      esac
+      case ",$labels," in *",documentation,"*) docs=true ;; esac
+      claimed="$claimed #$issue"
+    done
+    git fetch -q --no-tags origin "+refs/pull/$pr/head:refs/automerge/pr-$pr" 2>/dev/null || true
+    have=$(git diff --no-ext-diff --no-textconv -U0 "$main_sha...$sha" 2>/dev/null | DOCS="$docs" perl -ne '
+      if (m{^\+\+\+ (?:b/)?(.*)$}) { $f = $1; next }
+      next if m{^\+\+\+|^---};
+      next unless defined $f && s/^\+//;
+      next if $f =~ m{(?:^|/)go\.sum$};
+      my $prose = $f =~ /\.(?:md|txt|rst)$/i;
+      next if $prose && $ENV{DOCS} ne "true";
+      next if /^\s*$/;
+      next if !$prose && m{^\s*(?://|#|/\*|\*|--)};
+      $n++;
+      END { print $n + 0 }')
+    if [ "${have:-0}" -lt "$need" ]; then
+      hold "$pr" "$hold_label" "insubstantial" "Auto-merge skipped this PR because its changes look too small for the issues it closes ($claimed): about ${have:-0} substantive added line(s), where those issues would normally need at least $need. Blank lines and comment-only lines do not count, and Markdown counts only towards documentation issues.
+
+If the work is complete, a maintainer will review and merge it. Otherwise, please finish the issues before asking for review — points are awarded for the work the issue describes."
+      continue
+    fi
+  fi
+
   if [ "$dry_run" = true ]; then
     log "  WOULD MERGE #$pr"
     merges=$((merges + 1))
