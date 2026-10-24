@@ -31,7 +31,7 @@ func TestReportFileWritesJSON(t *testing.T) {
 	require.NoError(t, r.write(map[string]any{"ok": true}))
 	require.NoError(t, r.close())
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the path is a file this test just wrote in t.TempDir.
 	require.NoError(t, err)
 
 	var got map[string]any

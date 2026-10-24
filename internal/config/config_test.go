@@ -122,6 +122,7 @@ func TestEnvVarsAreRead(t *testing.T) {
 	t.Setenv(config.EnvNetworkPassphrase, "Public Global Stellar Network ; September 2015")
 	t.Setenv(config.EnvSourceAccount, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")
 	t.Setenv(config.EnvHTTPAddr, ":7000")
+	t.Setenv(config.EnvCORSOrigins, "https://dashboard.example, https://admin.example")
 	t.Setenv(config.EnvLogLevel, "warn")
 	t.Setenv(config.EnvTimeout, "90s")
 	t.Setenv(config.EnvWarnLedgers, "500")
@@ -134,6 +135,7 @@ func TestEnvVarsAreRead(t *testing.T) {
 
 	assert.Equal(t, "https://rpc.example.com", cfg.RPCURL)
 	assert.Equal(t, ":7000", cfg.HTTPAddr)
+	assert.Equal(t, []string{"https://dashboard.example", "https://admin.example"}, cfg.CORSOrigins)
 	assert.Equal(t, "warn", cfg.LogLevel)
 	assert.Equal(t, 90*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 500, cfg.WarnLedgers)

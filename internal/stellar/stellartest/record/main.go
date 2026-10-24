@@ -42,7 +42,7 @@ func main() {
 }
 
 func run(rpcURL, outDir, sac, wasm, undeployed, source string) error {
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
+	if err := os.MkdirAll(outDir, 0o750); err != nil {
 		return err
 	}
 	ctx := context.Background()
@@ -110,6 +110,16 @@ func run(rpcURL, outDir, sac, wasm, undeployed, source string) error {
 		fmt.Printf("recorded %s (error=%q)\n", c.name, truncate(resp.Error, 40))
 	}
 
+	// The extension simulation: what extending an entry's TTL would cost.
+	extendResp, err := simulateExtend(ctx, client, source, sac)
+	if err != nil {
+		return err
+	}
+	if err := write(outDir, "simulate_extend.json", extendResp); err != nil {
+		return err
+	}
+	fmt.Printf("recorded simulate_extend.json (error=%q)\n", truncate(extendResp.Error, 40))
+
 	return nil
 }
 
@@ -166,13 +176,37 @@ func simulate(ctx context.Context, c *rpcclient.Client, source, contractID, fn s
 	return c.SimulateTransaction(ctx, protocol.SimulateTransactionRequest{Transaction: envelope})
 }
 
+// simulateExtend records the cost of extending a contract's instance entry,
+// which is the transaction SoroProbe simulates to price a TTL extension.
+func simulateExtend(ctx context.Context, c *rpcclient.Client, source, contractID string) (protocol.SimulateTransactionResponse, error) {
+	addr, err := stellar.ParseContractID(contractID)
+	if err != nil {
+		return protocol.SimulateTransactionResponse{}, err
+	}
+
+	latest, err := c.GetLatestLedger(ctx)
+	if err != nil {
+		return protocol.SimulateTransactionResponse{}, err
+	}
+
+	envelope, err := stellar.BuildExtendFootprintTx(stellar.ExtendParams{
+		SourceAccount: source,
+		Key:           stellar.InstanceKey(addr),
+		ExtendTo:      latest.Sequence + 1_000_000,
+	})
+	if err != nil {
+		return protocol.SimulateTransactionResponse{}, err
+	}
+	return c.SimulateTransaction(ctx, protocol.SimulateTransactionRequest{Transaction: envelope})
+}
+
 func write(dir, name string, v any) error {
 	raw, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal %s: %w", name, err)
 	}
 	raw = append(raw, '\n')
-	return os.WriteFile(filepath.Join(dir, name), raw, 0o644)
+	return os.WriteFile(filepath.Join(dir, name), raw, 0o600)
 }
 
 func truncate(s string, n int) string {

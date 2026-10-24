@@ -27,6 +27,16 @@ import (
 // to be sorted and unique and rejects one that is not, so write them in
 // ascending order.
 
+// maxCollectionDepth bounds how deeply collections may nest.
+//
+// Every level of nesting re-parses the JSON of the level below it, so the
+// work grows with the square of the depth, and the parser is recursive, so
+// the depth also costs stack. A caller who controls the argument could
+// otherwise turn a short request into a long one. Contract types nest a
+// handful of levels at most, so a limit of a few dozen costs nothing a real
+// argument would notice.
+const maxCollectionDepth = 32
+
 // registerCollections installs the vec and map encoders. They close over the
 // Registry so that elements are encoded with whatever encoders it holds.
 func registerCollections(r *Registry) {
@@ -35,13 +45,22 @@ func registerCollections(r *Registry) {
 }
 
 func (r *Registry) encodeVec(literal string) (xdr.ScVal, error) {
+	return r.encodeVecAt(literal, 1)
+}
+
+// encodeVecAt encodes a vec that sits depth levels down, where the outermost
+// collection is depth 1.
+func (r *Registry) encodeVecAt(literal string, depth int) (xdr.ScVal, error) {
+	if depth > maxCollectionDepth {
+		return xdr.ScVal{}, errTooDeep
+	}
 	items, err := parseJSONArray(literal, "vec")
 	if err != nil {
 		return xdr.ScVal{}, err
 	}
 	vec := make(xdr.ScVec, 0, len(items))
 	for i, item := range items {
-		v, err := r.encodeElement(item)
+		v, err := r.encodeElementAt(item, depth)
 		if err != nil {
 			return xdr.ScVal{}, fmt.Errorf("vec[%d]: %w", i, err)
 		}
@@ -52,6 +71,15 @@ func (r *Registry) encodeVec(literal string) (xdr.ScVal, error) {
 }
 
 func (r *Registry) encodeMap(literal string) (xdr.ScVal, error) {
+	return r.encodeMapAt(literal, 1)
+}
+
+// encodeMapAt encodes a map that sits depth levels down, where the outermost
+// collection is depth 1.
+func (r *Registry) encodeMapAt(literal string, depth int) (xdr.ScVal, error) {
+	if depth > maxCollectionDepth {
+		return xdr.ScVal{}, errTooDeep
+	}
 	items, err := parseJSONArray(literal, "map")
 	if err != nil {
 		return xdr.ScVal{}, err
@@ -62,11 +90,11 @@ func (r *Registry) encodeMap(literal string) (xdr.ScVal, error) {
 		if err := json.Unmarshal(item, &pair); err != nil || len(pair) != 2 {
 			return xdr.ScVal{}, fmt.Errorf("map[%d]: each entry must be a [key, value] pair", i)
 		}
-		key, err := r.encodeElement(pair[0])
+		key, err := r.encodeElementAt(pair[0], depth)
 		if err != nil {
 			return xdr.ScVal{}, fmt.Errorf("map[%d] key: %w", i, err)
 		}
-		val, err := r.encodeElement(pair[1])
+		val, err := r.encodeElementAt(pair[1], depth)
 		if err != nil {
 			return xdr.ScVal{}, fmt.Errorf("map[%d] value: %w", i, err)
 		}
@@ -76,8 +104,9 @@ func (r *Registry) encodeMap(literal string) (xdr.ScVal, error) {
 	return xdr.ScVal{Type: xdr.ScValTypeScvMap, Map: &ptr}, nil
 }
 
-// encodeElement encodes one JSON element of a collection.
-func (r *Registry) encodeElement(raw json.RawMessage) (xdr.ScVal, error) {
+// encodeElementAt encodes one JSON element of a collection that sits depth
+// levels down.
+func (r *Registry) encodeElementAt(raw json.RawMessage, depth int) (xdr.ScVal, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
 		return xdr.ScVal{}, errors.New("empty element")
@@ -89,10 +118,15 @@ func (r *Registry) encodeElement(raw json.RawMessage) (xdr.ScVal, error) {
 		if err := json.Unmarshal(raw, &spec); err != nil {
 			return xdr.ScVal{}, err
 		}
+		// A spec written as a string starts its own collection, so it is
+		// encoded from the top again. That is safe: each level of this
+		// nesting has to escape the one below it, so the number of levels
+		// a given argument can reach grows no faster than the logarithm
+		// of its length.
 		return r.Encode(spec)
 	case '[':
 		// A nested array is a nested vec.
-		return r.encodeVec(string(raw))
+		return r.encodeVecAt(string(raw), depth+1)
 	case '{':
 		return xdr.ScVal{}, errors.New(`JSON objects are not supported; write a map as map:[["key", "value"], ...]`)
 	}
@@ -104,6 +138,9 @@ func (r *Registry) encodeElement(raw json.RawMessage) (xdr.ScVal, error) {
 	}
 	return r.Encode(literal)
 }
+
+// errTooDeep reports a collection nested deeper than the parser allows.
+var errTooDeep = fmt.Errorf("collection nesting is limited to %d levels", maxCollectionDepth)
 
 // parseJSONArray reads the value half of a vec: or map: spec.
 func parseJSONArray(literal, kind string) ([]json.RawMessage, error) {

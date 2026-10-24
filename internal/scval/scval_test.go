@@ -1,6 +1,7 @@
 package scval_test
 
 import (
+	"fmt"
 	"math"
 	"testing"
 
@@ -44,6 +45,8 @@ func TestEncodeExplicitTypes(t *testing.T) {
 		{"i128 positive", "i128:170141183460469231731687303715884105727", xdr.ScValTypeScvI128, "170141183460469231731687303715884105727"},
 		{"i128 negative", "i128:-170141183460469231731687303715884105728", xdr.ScValTypeScvI128, "-170141183460469231731687303715884105728"},
 		{"i128 minus one", "i128:-1", xdr.ScValTypeScvI128, "-1"},
+		{"i128 decimal amount", "i128:10.5@7", xdr.ScValTypeScvI128, "105000000"},
+		{"u128 decimal amount", "u128:1.5@2", xdr.ScValTypeScvU128, "150"},
 
 		{"u256", "u256:115792089237316195423570985008687907853269984665640564039457584007913129639935",
 			xdr.ScValTypeScvU256, "115792089237316195423570985008687907853269984665640564039457584007913129639935"},
@@ -136,6 +139,73 @@ func TestHasType(t *testing.T) {
 		testAccount:      false,
 	} {
 		assert.Equal(t, want, codec.HasType(spec), spec)
+	}
+}
+
+func TestEncodeDecimalAmounts(t *testing.T) {
+	t.Parallel()
+
+	// A token amount is written as a decimal plus the token's decimal count:
+	// "10.5@7" is 10.5 tokens of a 7-decimal token, which is 105000000 base
+	// units. The conversion must be exact — a rounding error here sends the
+	// wrong amount to a simulation — so every case below is spelled out in
+	// full.
+	tests := []struct {
+		name string
+		spec string
+		// want is the decoded value, as a decimal string.
+		want string
+		// wantErr, when set, is a fragment the error must contain.
+		wantErr string
+	}{
+		{name: "whole decimal amount", spec: "i128:10.5@7", want: "105000000"},
+		{name: "whole number scales too", spec: "i128:10@7", want: "100000000"},
+		{name: "zero", spec: "i128:0@7", want: "0"},
+		{name: "zero with a fraction", spec: "i128:0.0@7", want: "0"},
+		{name: "negative amount", spec: "i128:-10.5@7", want: "-105000000"},
+		{name: "negative whole number", spec: "i128:-10@7", want: "-100000000"},
+		{name: "leading plus", spec: "i128:+10.5@7", want: "105000000"},
+		{name: "smallest unit", spec: "i128:0.0000001@7", want: "1"},
+		{name: "exactly as many digits as decimals", spec: "i128:10.5000000@7", want: "105000000"},
+		{name: "trailing zeros are kept", spec: "i128:10.50@7", want: "105000000"},
+		{name: "no integer part", spec: "i128:.5@7", want: "5000000"},
+		{name: "two decimals", spec: "u128:1.5@2", want: "150"},
+		{name: "one decimal", spec: "i256:1.5@1", want: "15"},
+		{name: "narrow type still scales", spec: "u32:10.5@2", want: "1050"},
+		{name: "zero decimals", spec: "i128:10.5@0", wantErr: "fractional digits"},
+
+		{name: "more digits than decimals", spec: "i128:10.50000000@7", wantErr: "fractional digits"},
+		{name: "fraction without a decimal count", spec: "i128:10.5", wantErr: "expected an integer"},
+		{name: "not a number", spec: "i128:abc@7", wantErr: "expected a number"},
+		{name: "empty amount", spec: "i128:@7", wantErr: "expected a number"},
+		{name: "decimal count is not a number", spec: "i128:10.5@x", wantErr: "expected a decimal count"},
+		{name: "negative decimal count", spec: "i128:10.5@-1", wantErr: "expected a decimal count"},
+		{name: "fractional decimal count", spec: "i128:10.5@7.5", wantErr: "expected a decimal count"},
+		{name: "decimal count out of range", spec: "i128:10.5@77", wantErr: "out of range"},
+		{name: "scaled past the type", spec: "i128:1@39", wantErr: "out of range for i128"},
+	}
+
+	codec := scval.NewRegistry()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := codec.Encode(tt.spec)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Contains(t, err.Error(), tt.spec, "error should quote the offending argument")
+				return
+			}
+
+			require.NoError(t, err)
+			decoded, err := codec.Decode(got)
+			require.NoError(t, err)
+			// Integers wider than 32 bits decode to a decimal string, the
+			// narrower ones to a number; the printed form is the same either
+			// way.
+			assert.Equal(t, tt.want, fmt.Sprint(decoded))
+		})
 	}
 }
 
