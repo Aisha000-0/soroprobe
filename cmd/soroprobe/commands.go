@@ -16,6 +16,7 @@ import (
 	"go.yaml.in/yaml/v3"
 
 	"github.com/soroworks/soroprobe/internal/api"
+	"github.com/soroworks/soroprobe/internal/config"
 	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/soroworks/soroprobe/internal/probe"
 )
@@ -693,12 +694,18 @@ func inGitHubActions() bool {
 
 func newServeCmd(opts *options) *cobra.Command {
 	var addr string
+	var apiToken string
 
 	cmd := &cobra.Command{
 		Use:   "serve",
 		Short: "Run the HTTP API",
 		Long: `Serve the HTTP API, which mirrors the CLI for use from CI systems and other
-services. The API is read-only, exactly like the CLI.`,
+services. The API is read-only, exactly like the CLI.
+
+The API is unauthenticated by default, which is fine on a private network. Set
+API_TOKEN (or --api-token) to require "Authorization: Bearer <token>" on every
+/v1 route; /healthz stays open so a liveness probe needs no credential. A
+token shorter than 16 characters is rejected at startup.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if addr != "" {
@@ -718,12 +725,15 @@ services. The API is read-only, exactly like the CLI.`,
 				Logger:            log,
 				CORSOrigins:       opts.cfg.CORSOrigins,
 				NetworkPassphrase: opts.cfg.NetworkPassphrase,
+				APIToken:          opts.cfg.APIToken,
 			})
 			return server.ListenAndServe(cmd.Context())
 		},
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address, overriding HTTP_ADDR")
+	cmd.Flags().StringVar(&apiToken, "api-token", "",
+		fmt.Sprintf("require this bearer token on /v1 routes, overriding %s", config.EnvAPIToken))
 	return cmd
 }
 

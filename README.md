@@ -472,13 +472,14 @@ simulation step is honestly reported as `SKIP`.
 ### `soroprobe serve`
 
 Runs the HTTP API. It binds `127.0.0.1:8080` by default; `--addr` overrides
-`HTTP_ADDR`.
+`HTTP_ADDR`. Set `API_TOKEN` (or `--api-token`) to require a bearer token on
+the `/v1` routes — see [Authentication](#authentication).
 
 ### Global flags
 
 `--json`, `--config`, `--rpc-url`, `--network-passphrase`, `--source-account`,
-`--log-level`, `--timeout`, `--warn-ledgers`, `--critical-ledgers`,
-`--sorovault-url`.
+`--log-level`, `--log-format`, `--timeout`, `--warn-ledgers`,
+`--critical-ledgers`, `--sorovault-url`.
 
 ## Argument encoding
 
@@ -625,6 +626,34 @@ Set `CORS_ORIGINS` to a comma-separated list of exact browser origins, such as
 `https://dashboard.example,https://admin.example`, to enable CORS. Unset means
 no CORS headers. Preflight requests are answered only for listed origins.
 
+### Authentication
+
+The API is unauthenticated by default, which is fine on a private network.
+Exposed more widely, anyone who can reach it can make it spend the operator's
+RPC quota — a paid provider, often — on arbitrary simulations. Set a token to
+stop that:
+
+```bash
+export API_TOKEN="$(openssl rand -hex 32)"
+soroprobe serve --addr 0.0.0.0:8080       # or: serve --api-token <token>
+```
+
+With a token set, every route under `/v1` requires
+`Authorization: Bearer <token>`; anything else is a **401** with a
+`WWW-Authenticate` header. `/healthz` never requires auth, so a liveness probe
+needs no credential. Unset keeps today's open behaviour. Two details are
+enforced rather than advised:
+
+- **Tokens shorter than 16 characters are rejected at startup.** A token short
+  enough to guess is not meaningfully different from no token at all.
+- **Comparison is constant-time**, so response timing cannot be used to
+  discover the token one character at a time.
+
+```bash
+curl -s -H "Authorization: Bearer $API_TOKEN" \
+  localhost:8080/v1/inspect/CDLZ… | jq
+```
+
 ### `GET /healthz`
 
 Liveness. Deliberately does **not** call out to the network, so the probe does
@@ -706,6 +735,7 @@ run sequentially; split larger batches or use the CLI.
 | --- | --- |
 | 200 | The probe ran. **Read `success` / `ok` in the body for the verdict.** |
 | 400 | Bad input — malformed contract id, bad argument, unknown durability |
+| 401 | `API_TOKEN` is set and the bearer token is missing or wrong |
 | 404 | No such route |
 | 502 | Upstream RPC failed |
 | 503 | `/readyz` only: the RPC endpoint is unreachable, unhealthy, or on another network |
@@ -735,12 +765,20 @@ Precedence, lowest to highest: **defaults → config file → environment → fl
 | `SOURCE_ACCOUNT` | `--source-account` | all-zero placeholder |
 | `HTTP_ADDR` | `--addr` (on `serve`) | `127.0.0.1:8080` |
 | `CORS_ORIGINS` | — | unset; no CORS headers |
+| `API_TOKEN` | `--api-token` (on `serve`) | unset — `/v1` routes are open |
 | `LOG_LEVEL` | `--log-level` | `info` |
+| `LOG_FORMAT` | `--log-format` | `text` |
 | `RPC_TIMEOUT` | `--timeout` | `30s` |
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |
 | `CRITICAL_LEDGERS` | `--critical-ledgers` | `17280` (≈1 day) |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
 | `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` if present |
+
+Logs go to **stderr** in both formats, so redirecting stdout (or consuming
+`--json` output) never mixes a log line into the document being parsed.
+`LOG_FORMAT=json` (or `--log-format json`) emits one JSON object per line —
+filterable by field (`contract`, `status`) in CI and log aggregators instead
+of regex-parsed. `text`, the default, keeps the readable `key=value` lines.
 
 [.env.example](.env.example) documents every variable. SoroProbe reads the
 **environment**, not `.env` itself, so load it yourself:

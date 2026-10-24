@@ -154,6 +154,7 @@ func TestAllPersistentFlagsAreApplied(t *testing.T) {
 		"--network-passphrase", "Custom Network",
 		"--source-account", "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
 		"--log-level", "debug",
+		"--log-format", "json",
 		"--timeout", "12s",
 		"--warn-ledgers", "999",
 		"--critical-ledgers", "99",
@@ -162,9 +163,29 @@ func TestAllPersistentFlagsAreApplied(t *testing.T) {
 	assert.Equal(t, "https://rpc.example.com", cfg.RPCURL)
 	assert.Equal(t, "Custom Network", cfg.NetworkPassphrase)
 	assert.Equal(t, "debug", cfg.LogLevel)
+	assert.Equal(t, "json", cfg.LogFormat)
 	assert.Equal(t, 12*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 999, cfg.WarnLedgers)
 	assert.EqualValues(t, 99, cfg.CriticalLedgers)
+}
+
+func TestLogFormatDefaultsToText(t *testing.T) {
+	cfg := resolveConfig(t, "inspect")
+	assert.Equal(t, "text", cfg.LogFormat)
+}
+
+func TestAPITokenFlagOverridesEnvironment(t *testing.T) {
+	t.Setenv(config.EnvAPIToken, "env-token-0123456789")
+
+	cfg := resolveConfig(t, "serve", "--api-token", "flag-token-0123456789")
+	assert.Equal(t, "flag-token-0123456789", cfg.APIToken, "a flag must beat the environment")
+}
+
+func TestAPITokenFromEnvironmentIsResolvedForServe(t *testing.T) {
+	t.Setenv(config.EnvAPIToken, "env-token-0123456789")
+
+	cfg := resolveConfig(t, "serve")
+	assert.Equal(t, "env-token-0123456789", cfg.APIToken)
 }
 
 func TestInvalidConfigIsRejectedBeforeAnyNetworkCall(t *testing.T) {
@@ -178,8 +199,19 @@ func TestInvalidConfigIsRejectedBeforeAnyNetworkCall(t *testing.T) {
 			"--source-account", "SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 		}},
 		{"bad log level", []string{"inspect", "CDLZ", "--log-level", "chatty"}},
+		{
+			// The error must name the accepted values, so the operator does
+			// not have to guess them.
+			"bad log format",
+			[]string{"inspect", "CDLZ", "--log-format", "yaml"},
+		},
 		{"rpc url without scheme", []string{"inspect", "CDLZ", "--rpc-url", "rpc.example.com"}},
 		{"critical above warn", []string{"inspect", "CDLZ", "--warn-ledgers", "10", "--critical-ledgers", "100"}},
+		{
+			// A token too short to be safe must stop serve before it binds.
+			"short api token",
+			[]string{"serve", "--api-token", "tooshort"},
+		},
 	}
 
 	for _, tt := range tests {
