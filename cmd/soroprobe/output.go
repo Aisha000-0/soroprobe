@@ -144,6 +144,25 @@ func renderSimulate(w io.Writer, r *probe.SimulateResult) error {
 	bw.printf("  write bytes        %d\n", r.Cost.WriteBytes)
 	bw.printf("  resource fee       %s\n", stroops(r.Cost.ResourceFee))
 	bw.printf("  min resource fee   %s\n", stroops(r.Cost.MinResourceFee))
+	bw.printf("  estimated total fee %s\n", stroops(r.Cost.EstimatedTotalFee))
+
+	if len(r.Auth) > 0 {
+		bw.printf("\n%s\n", s.bold("authorizations"))
+		for _, a := range r.Auth {
+			if a.RawXDR != "" {
+				bw.printf("  %s %s\n", s.dim("raw xdr:"), a.RawXDR)
+				continue
+			}
+			src := ""
+			if a.IsSourceAccount {
+				src = s.dim(" (source account)")
+			}
+			bw.printf("  %s%s\n", s.cyan(a.Address), src)
+			if a.RootInvocation != nil {
+				renderAuthorizedInvocation(bw, s, a.RootInvocation, "    ")
+			}
+		}
+	}
 
 	if n := len(r.Footprint.ReadOnly) + len(r.Footprint.ReadWrite); n > 0 {
 		bw.printf("\n%s\n", s.bold("footprint"))
@@ -389,6 +408,26 @@ func renderBatch(w io.Writer, r *probe.BatchResult) error {
 
 	bw.printf("\n%s %d passed, %d failed, %d could not run\n", s.bold("result"), passed, failed, errored)
 	return bw.err
+}
+
+func renderAuthorizedInvocation(bw *bufWriter, s styler, inv *probe.AuthorizedInvocation, indent string) {
+	var args []string
+	for _, arg := range inv.Args {
+		b, err := json.Marshal(arg)
+		if err != nil {
+			args = append(args, fmt.Sprint(arg))
+		} else {
+			args = append(args, string(b))
+		}
+	}
+	target := inv.Function
+	if inv.ContractID != "" {
+		target = inv.ContractID + "::" + inv.Function
+	}
+	bw.printf("%s%s(%s)\n", indent, target, strings.Join(args, ", "))
+	for _, sub := range inv.SubInvocations {
+		renderAuthorizedInvocation(bw, s, &sub, indent+"  ")
+	}
 }
 
 // firstNotPassing describes the first step with the given outcome, or

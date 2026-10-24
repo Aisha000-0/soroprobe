@@ -65,3 +65,13 @@ jobs:
       # The suite replays recorded fixtures and never reaches the network.
       - name: Test
         run: go test -race ./...
+
+  openapi-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Lint openapi.json
+        run: npx --yes @redocly/cli@2.60.0 lint --extends=minimal internal/api/openapi.json
