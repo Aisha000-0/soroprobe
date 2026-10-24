@@ -1,10 +1,16 @@
 package probe
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"reflect"
+
+	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/soroworks/soroprobe/internal/health"
+	"github.com/soroworks/soroprobe/internal/scval"
 )
 
 // CheckRequest describes a combined health check.
@@ -21,6 +27,8 @@ type CheckRequest struct {
 	Function string `json:"function,omitempty" yaml:"function,omitempty"`
 	// Args are argument specifications for Function.
 	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
+	// Expect is an optional argument specification for the expected return value.
+	Expect string `json:"expect,omitempty" yaml:"expect,omitempty"`
 	// DataKeys are optional data entries to include in the TTL assessment.
 	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
@@ -127,6 +135,11 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 	}
 	result.Checks = append(result.Checks, simCheck)
 
+	// 6. Expected return value, when an expectation was given.
+	if req.Expect != "" {
+		result.Checks = append(result.Checks, p.expectCheck(req, result))
+	}
+
 	result.OK = true
 	for _, c := range result.Checks {
 		if c.Outcome == OutcomeFail {
@@ -183,4 +196,107 @@ func ttlCheck(name string, entry EntryReport) Check {
 		outcome = OutcomeWarn
 	}
 	return Check{Name: name, Outcome: outcome, Detail: entry.Summary}
+}
+
+func (p *Prober) expectCheck(req CheckRequest, result *CheckResult) Check {
+	if req.Function == "" {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  "an expected value was given but no function was specified",
+		}
+	}
+	if result.Simulate == nil || !result.Simulate.Success {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  "cannot check return value because simulation failed or did not run",
+		}
+	}
+
+	expectedVal, err := p.codec.Encode(req.Expect)
+	if err != nil {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("invalid expected value %q: %v", req.Expect, err),
+		}
+	}
+
+	var actualVal xdr.ScVal
+	if result.Simulate.ReturnValueXDR != "" {
+		if err := xdr.SafeUnmarshalBase64(result.Simulate.ReturnValueXDR, &actualVal); err != nil {
+			return Check{
+				Name:    "expect",
+				Outcome: OutcomeFail,
+				Detail:  fmt.Sprintf("decode actual return value: %v", err),
+			}
+		}
+	} else {
+		actualVal = xdr.ScVal{Type: xdr.ScValTypeScvVoid}
+	}
+
+	match, typeMismatch := compareScVals(expectedVal, actualVal)
+
+	expDecoded, _ := p.codec.Decode(expectedVal)
+	actDecoded := result.Simulate.ReturnValue
+	expDisp := formatVal(expDecoded)
+	actDisp := formatVal(actDecoded)
+
+	if match {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomePass,
+			Detail:  fmt.Sprintf("expected %s, got %s", expDisp, actDisp),
+		}
+	}
+
+	if typeMismatch {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("type mismatch: expected %s, got %s", expDisp, actDisp),
+		}
+	}
+
+	return Check{
+		Name:    "expect",
+		Outcome: OutcomeFail,
+		Detail:  fmt.Sprintf("expected %s, got %s", expDisp, actDisp),
+	}
+}
+
+func compareScVals(expected, actual xdr.ScVal) (match bool, typeMismatch bool) {
+	expInt, expIsInt := scval.ToBigInt(expected)
+	actInt, actIsInt := scval.ToBigInt(actual)
+
+	if expIsInt || actIsInt {
+		if expIsInt && actIsInt {
+			return expInt.Cmp(actInt) == 0, false
+		}
+		return false, true
+	}
+
+	if expected.Type != actual.Type {
+		return false, true
+	}
+
+	expBytes, err1 := expected.MarshalBinary()
+	actBytes, err2 := actual.MarshalBinary()
+	if err1 == nil && err2 == nil {
+		return bytes.Equal(expBytes, actBytes), false
+	}
+
+	return reflect.DeepEqual(expected, actual), false
+}
+
+func formatVal(v any) string {
+	if v == nil {
+		return "(void)"
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }

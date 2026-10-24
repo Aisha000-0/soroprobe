@@ -17,7 +17,7 @@ func openReport(path string) (*reportFile, error) {
 	if path == "" {
 		return nil, nil
 	}
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec // --report is an operator-supplied path; writing it is the feature.
 	if err != nil {
 		return nil, fmt.Errorf("create report file %s: %w", path, err)
 	}

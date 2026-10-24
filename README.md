@@ -96,6 +96,17 @@ docker build -t soroprobe .
 docker run --rm soroprobe inspect CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC
 ```
 
+Or run the HTTP API with Docker Compose, which builds the image and serves on
+`localhost:8080`:
+
+```bash
+docker compose up
+```
+
+`RPC_URL`, `NETWORK_PASSPHRASE` and `SOROVAULT_URL` are passed through from
+the environment (or a `.env` file); the defaults target the public testnet, so
+the stack comes up with no configuration at all.
+
 If your local Go is older than 1.25, nothing needs to change: `GOTOOLCHAIN=auto`
 is Go's default and will fetch the right toolchain on first build.
 
@@ -237,6 +248,8 @@ value, resource cost and ledger footprint.
 | `--report <path>` | Also write the JSON result to this file, for a CI artifact. |
 | `--baseline <path>` | Compare the cost against a saved simulation report (a previous `--json` output). |
 | `--max-increase <pct>` | Fail (exit 1) when a cost figure grows by more than this percentage. |
+| `--repeat <n>` | Simulate the call `n` times and report the spread between the runs. |
+| `--max-spread <pct>` | Fail (exit 1) when the spread across repeated runs exceeds this percentage. |
 
 A call the contract rejects is **not** a tool error — it exits 0 and reports
 `FAILED` with the host's error text. Use `check` if you want a non-zero exit.
@@ -278,6 +291,26 @@ The percentage sign is optional, so `10` and `10%` mean the same thing. A
 figure that grew from a baseline of zero has no percentage to compare
 against, so it counts as an increase however large the threshold is: from
 nothing to something is not a small change.
+
+**Nondeterministic costs.** A single simulation can be a noisy sample — the
+state moved, or the node was busy — and a baseline taken from one run produces
+a flaky check. `--repeat` runs the same call several times and reports the
+range each figure took:
+
+```
+$ soroprobe simulate CDLZ… transfer … --repeat 5
+cost across 5 runs
+  cpu instructions       127569..139264  (spread 11695, 9.2%)
+  disk read bytes        0..0            (spread 0, n/a)
+  write bytes            0..0            (spread 0, n/a)
+  resource fee (stroops) 12279..13400    (spread 1121, 9.1%)
+```
+
+`--max-spread` turns that into a gate: the command exits **1** when any figure
+spreads by more than the threshold across identical runs, because a check you
+cannot reproduce is not a passing check. With `--repeat` **and** `--baseline`
+together, the comparison uses the **maximum** of the repeated runs, so a flaky
+estimate cannot slip under the threshold by luck.
 
 ### `soroprobe inspect <contract-id>`
 
@@ -380,6 +413,12 @@ on the run summary instead of burying it in the log:
 ```
 
 `--json` suppresses annotations, since its consumer parses the document.
+
+**Exit-code-only checks.** `--quiet` (`-q`) prints no report at all — success
+and check failure are told apart by the exit code alone. Errors that make
+SoroProbe itself fail (exit 2) still reach **stderr**, which is the point:
+`> /dev/null` used to hide them, and `--quiet` does not. `--quiet` cannot be
+combined with `--json` or `--report`.
 
 **Checking many contracts at once.** `--file` runs every check listed in a
 JSON or YAML file (`-` reads stdin), so one CI step can cover a whole deployment:
@@ -508,6 +547,9 @@ inferred the same way; a nested array is a nested `vec`. Map entries are kept
 in the order written, and Soroban rejects a map whose keys are not sorted
 ascending and unique, so write them in order.
 
+Collections may nest up to 32 levels deep. Deeper nesting is turned away
+rather than parsed, because every level is read again on the way down.
+
 **Inference.** A bare value with no prefix is inferred: `true`/`false` become
 bool, `void`/`null` become void, a valid `G...`/`C...` address becomes an
 address, a run of digits becomes **i128**, and anything else becomes a symbol if
@@ -592,6 +634,27 @@ not fail because an upstream RPC endpoint blipped.
 {"status": "ok"}
 ```
 
+### `GET /readyz`
+
+Readiness. Unlike `/healthz`, it calls the configured RPC endpoint: **200**
+when the endpoint reports healthy and serves the configured network
+passphrase, **503** with a JSON reason otherwise. An orchestrator uses it to
+take an instance out of rotation while its upstream is down, without
+restarting the process — which is exactly what `/healthz` must not do.
+
+```json
+{"status": "ready"}
+```
+
+```json
+{"status": "unready", "reason": "rpc unreachable: getHealth: connection refused"}
+```
+
+The result — success or failure — is cached for a few seconds, so a chatty
+orchestrator does not multiply RPC traffic. The cache is server-side only; the
+response itself is marked `Cache-Control: no-store`, because its answer
+describes live upstream state.
+
 ### `POST /v1/simulate`
 
 ```bash
@@ -645,6 +708,7 @@ run sequentially; split larger batches or use the CLI.
 | 400 | Bad input — malformed contract id, bad argument, unknown durability |
 | 404 | No such route |
 | 502 | Upstream RPC failed |
+| 503 | `/readyz` only: the RPC endpoint is unreachable, unhealthy, or on another network |
 
 A contract that fails its check still returns **200**: the request succeeded, it
 just carries bad news. Returning 5xx would conflate an unhealthy contract with a
@@ -655,9 +719,10 @@ broken service, and monitoring cannot tell those apart after the fact.
 Every response carries `X-Content-Type-Options: nosniff`, so a browser that is
 pointed at the API cannot be tricked into interpreting a JSON body as HTML.
 
-Routes under `/v1` also carry `Cache-Control: no-store`: their answers describe
-live on-chain state, and a cached health result would be worse than no result.
-`/healthz` is exempt — it holds no chain state and is meant to be polled cheaply.
+Routes under `/v1` — and `GET /readyz` — also carry `Cache-Control: no-store`:
+their answers describe live on-chain state, and a cached health result would
+be worse than no result. `/healthz` is exempt — it holds no chain state and is
+meant to be polled cheaply.
 
 ## Configuration
 

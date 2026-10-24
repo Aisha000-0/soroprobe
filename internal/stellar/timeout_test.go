@@ -33,7 +33,7 @@ func TestHungRequestFailsAfterTheConfiguredTimeout(t *testing.T) {
 	srv := newHangingServer(t)
 	client, err := New(Options{URL: srv.URL, Timeout: 100 * time.Millisecond})
 	require.NoError(t, err)
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	start := time.Now()
 	_, err = client.GetLatestLedger(context.Background())
@@ -61,10 +61,10 @@ func TestZeroTimeoutFallsBackToTheDefault(t *testing.T) {
 	}
 }
 
-// TestCallerDeadlineDoesNotShortenAnInFlightRequest pins today's behaviour,
+// TestCallerDeadlineDoesNotShortenAnInFlightRequest pins today's behavior,
 // which is the one criterion of soroworks/soroprobe#21 a test cannot change:
 // the SDK's JSON-RPC channel (jrpc2, jhttp.Channel.Send) posts with
-// http.NewRequest — no context — so a context that is already cancelled fails
+// http.NewRequest — no context — so a context that is already canceled fails
 // fast, but one whose deadline passes after the request is in flight is
 // ignored: only http.Client.Timeout (the configured RPC_TIMEOUT) can end it.
 // When the transport learns to propagate the caller's context, this test
@@ -76,7 +76,7 @@ func TestCallerDeadlineDoesNotShortenAnInFlightRequest(t *testing.T) {
 	const configured = 750 * time.Millisecond
 	client, err := New(Options{URL: srv.URL, Timeout: configured})
 	require.NoError(t, err)
-	t.Cleanup(func() { client.Close() })
+	t.Cleanup(func() { _ = client.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()

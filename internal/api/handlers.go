@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -23,6 +24,58 @@ const maxBodyBytes = 64 << 10
 // upstream RPC endpoint is briefly unavailable.
 func (s *Server) handleLiveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReadiness reports whether this instance can answer queries: unlike
+// /healthz, it calls the configured RPC endpoint, which must report healthy
+// and serve the configured network. An orchestrator uses it to take an
+// instance out of rotation while its upstream is down — the reason for the
+// split is that a liveness probe must not restart the process for an RPC
+// blip.
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	// The answer describes live upstream state, so neither an intermediary
+	// nor a browser may serve a stale copy. (The few-second reuse lives in
+	// the server, below, and is what keeps probes off the RPC endpoint.)
+	w.Header().Set("Cache-Control", "no-store")
+
+	if err, ok := s.cachedReadiness(); ok {
+		s.writeReadiness(w, err)
+		return
+	}
+
+	err := s.prober.Ready(r.Context(), s.networkPassphrase)
+
+	s.readyMu.Lock()
+	s.readyErr, s.readyAt, s.readySet = err, time.Now(), true
+	s.readyMu.Unlock()
+
+	s.writeReadiness(w, err)
+}
+
+// cachedReadiness returns the last readiness result while it is fresh, so
+// frequent probes do not multiply RPC traffic. Failures are cached too: an
+// orchestrator probing every second must not turn an RPC outage into an
+// outage of its own.
+func (s *Server) cachedReadiness() (error, bool) {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if !s.readySet || time.Since(s.readyAt) >= s.readinessTTL {
+		return nil, false
+	}
+	return s.readyErr, true
+}
+
+// writeReadiness renders a readiness result: 200 when the RPC endpoint is
+// ready, 503 with the probe's own reason otherwise.
+func (s *Server) writeReadiness(w http.ResponseWriter, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		return
+	}
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"status": "unready",
+		"reason": err.Error(),
+	})
 }
 
 // simulateBody is the POST /v1/simulate payload.
@@ -153,6 +206,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		ContractID:     chi.URLParam(r, "contract"),
 		Function:       query.Get("fn"),
 		Args:           query["arg"],
+		Expect:         query.Get("expect"),
 		DataKeys:       query["key"],
 		DataDurability: durability,
 	})
