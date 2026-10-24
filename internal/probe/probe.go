@@ -1,5 +1,6 @@
 // Package probe orchestrates SoroProbe's three operations — simulate, inspect
-// and check — on top of the stellar, scval and health packages.
+// and check — on top of the stellar, scval and health packages, and answers
+// readiness questions about the RPC endpoint itself.
 //
 // Every operation returns a plain result struct. The CLI and the HTTP API both
 // render those structs, so the two interfaces cannot drift apart.
@@ -25,6 +26,7 @@ type Prober struct {
 
 	abi     abi.Source
 	network string
+	baseFee int64
 }
 
 // Options configures a Prober.
@@ -48,6 +50,10 @@ type Options struct {
 	// Network is the label ABI lookups are filed under ("testnet",
 	// "public", ...). Only read when ABI is set.
 	Network string
+
+	// BaseFee is the base fee per operation in stroops used to estimate total fees.
+	// Defaults to DefaultBaseFee (100 stroops).
+	BaseFee int64
 }
 
 // New builds a Prober.
@@ -67,6 +73,10 @@ func New(opts Options) (*Prober, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
+	baseFee := opts.BaseFee
+	if baseFee <= 0 {
+		baseFee = DefaultBaseFee
+	}
 	return &Prober{
 		client:     opts.Client,
 		codec:      opts.Codec,
@@ -75,6 +85,7 @@ func New(opts Options) (*Prober, error) {
 		log:        opts.Logger,
 		abi:        opts.ABI,
 		network:    opts.Network,
+		baseFee:    baseFee,
 	}, nil
 }
 
@@ -95,6 +106,8 @@ type Cost struct {
 	ResourceFee int64 `json:"resource_fee_stroops"`
 	// MinResourceFee is the minimum resource fee RPC recommends adding.
 	MinResourceFee int64 `json:"min_resource_fee_stroops"`
+	// EstimatedTotalFee is the estimated total fee (resource fee plus base inclusion fee) in stroops.
+	EstimatedTotalFee int64 `json:"estimated_total_fee_stroops"`
 }
 
 // Footprint lists the ledger entries an invocation would touch.

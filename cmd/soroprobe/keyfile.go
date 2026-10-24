@@ -40,11 +40,11 @@ func parseKeyFile(r io.Reader, name string) ([]string, error) {
 
 // readKeyFile reads key specs from the file at path.
 func readKeyFile(path string) ([]string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // --key-file is an operator-supplied path; reading it is the feature.
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only input; a close error cannot lose data.
 	return parseKeyFile(f, path)
 }
 

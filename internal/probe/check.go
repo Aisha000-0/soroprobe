@@ -1,17 +1,23 @@
 package probe
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+
+	"github.com/stellar/go-stellar-sdk/xdr"
 
 	"github.com/soroworks/soroprobe/internal/health"
+	"github.com/soroworks/soroprobe/internal/scval"
 )
 
 // CheckRequest describes a combined health check.
 type CheckRequest struct {
 	// ContractID is the strkey contract address ("C...").
-	ContractID string `json:"contract_id"`
+	ContractID string `json:"contract_id" yaml:"contract_id"`
 	// Function, when set, names a read-only function to simulate as a
 	// liveness probe.
 	//
@@ -19,13 +25,15 @@ type CheckRequest struct {
 	// exported functions from the ledger, and inventing a name would produce a
 	// misleading failure, so the simulation step is reported as skipped rather
 	// than guessed at.
-	Function string `json:"function,omitempty"`
+	Function string `json:"function,omitempty" yaml:"function,omitempty"`
 	// Args are argument specifications for Function.
-	Args []string `json:"args,omitempty"`
+	Args []string `json:"args,omitempty" yaml:"args,omitempty"`
+	// Expect is an optional argument specification for the expected return value.
+	Expect string `json:"expect,omitempty" yaml:"expect,omitempty"`
 	// DataKeys are optional data entries to include in the TTL assessment.
-	DataKeys []string `json:"data_keys,omitempty"`
+	DataKeys []string `json:"data_keys,omitempty" yaml:"data_keys,omitempty"`
 	// DataDurability selects the durability DataKeys are read at.
-	DataDurability health.Durability `json:"data_durability,omitempty"`
+	DataDurability health.Durability `json:"data_durability,omitempty" yaml:"data_durability,omitempty"`
 }
 
 // CheckOutcome is the result of one individual check.
@@ -90,13 +98,30 @@ var errStop = errors.New("stop checking")
 // checkSteps is the ordered list Check runs. To add a check, implement
 // CheckStep and append it here at the position its result should appear; a step
 // reads the inspect and simulation state Check gathered once, so it cannot add
-// an RPC call by itself.
-var checkSteps = []CheckStep{
-	&deployedStep{},
-	&instanceTTLStep{},
-	&codeTTLStep{},
-	&dataTTLStep{},
-	&simulateStep{},
+// an RPC call by itself. It is built per Prober because some steps, such as the
+// return-value assertion, need the prober's argument codec.
+func (p *Prober) checkSteps() []CheckStep {
+	return []CheckStep{
+		&deployedStep{},
+		&instanceTTLStep{},
+		&codeTTLStep{},
+		&dataTTLStep{},
+		&simulateStep{},
+		&expectStep{p: p},
+	}
+}
+
+// expectStep asserts the simulated call's return value when the request names
+// an expected value. Without one it contributes nothing.
+type expectStep struct{ p *Prober }
+
+func (s *expectStep) Name() string { return "expect" }
+
+func (s *expectStep) Run(_ context.Context, req CheckRequest, _ *InspectResult, simulate *SimulateResult) ([]Check, error) {
+	if req.Expect == "" {
+		return nil, nil
+	}
+	return []Check{s.p.expectCheck(req, &CheckResult{Simulate: simulate})}, nil
 }
 
 // Check runs the combined health check: is the contract deployed, are its
@@ -140,7 +165,7 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 		LatestLedger: inspect.LatestLedger,
 	}
 
-	for _, step := range checkSteps {
+	for _, step := range p.checkSteps() {
 		checks, err := step.Run(ctx, req, inspect, sim)
 		result.Checks = append(result.Checks, checks...)
 		if err != nil {
@@ -268,4 +293,107 @@ func (s *simulateStep) Run(_ context.Context, req CheckRequest, _ *InspectResult
 		Detail: fmt.Sprintf("calling %s succeeded, %d instructions, min resource fee %d stroops",
 			req.Function, simulate.Cost.Instructions, simulate.Cost.MinResourceFee),
 	}}, nil
+}
+
+func (p *Prober) expectCheck(req CheckRequest, result *CheckResult) Check {
+	if req.Function == "" {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  "an expected value was given but no function was specified",
+		}
+	}
+	if result.Simulate == nil || !result.Simulate.Success {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  "cannot check return value because simulation failed or did not run",
+		}
+	}
+
+	expectedVal, err := p.codec.Encode(req.Expect)
+	if err != nil {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("invalid expected value %q: %v", req.Expect, err),
+		}
+	}
+
+	var actualVal xdr.ScVal
+	if result.Simulate.ReturnValueXDR != "" {
+		if err := xdr.SafeUnmarshalBase64(result.Simulate.ReturnValueXDR, &actualVal); err != nil {
+			return Check{
+				Name:    "expect",
+				Outcome: OutcomeFail,
+				Detail:  fmt.Sprintf("decode actual return value: %v", err),
+			}
+		}
+	} else {
+		actualVal = xdr.ScVal{Type: xdr.ScValTypeScvVoid}
+	}
+
+	match, typeMismatch := compareScVals(expectedVal, actualVal)
+
+	expDecoded, _ := p.codec.Decode(expectedVal)
+	actDecoded := result.Simulate.ReturnValue
+	expDisp := formatVal(expDecoded)
+	actDisp := formatVal(actDecoded)
+
+	if match {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomePass,
+			Detail:  fmt.Sprintf("expected %s, got %s", expDisp, actDisp),
+		}
+	}
+
+	if typeMismatch {
+		return Check{
+			Name:    "expect",
+			Outcome: OutcomeFail,
+			Detail:  fmt.Sprintf("type mismatch: expected %s, got %s", expDisp, actDisp),
+		}
+	}
+
+	return Check{
+		Name:    "expect",
+		Outcome: OutcomeFail,
+		Detail:  fmt.Sprintf("expected %s, got %s", expDisp, actDisp),
+	}
+}
+
+func compareScVals(expected, actual xdr.ScVal) (match bool, typeMismatch bool) {
+	expInt, expIsInt := scval.ToBigInt(expected)
+	actInt, actIsInt := scval.ToBigInt(actual)
+
+	if expIsInt || actIsInt {
+		if expIsInt && actIsInt {
+			return expInt.Cmp(actInt) == 0, false
+		}
+		return false, true
+	}
+
+	if expected.Type != actual.Type {
+		return false, true
+	}
+
+	expBytes, err1 := expected.MarshalBinary()
+	actBytes, err2 := actual.MarshalBinary()
+	if err1 == nil && err2 == nil {
+		return bytes.Equal(expBytes, actBytes), false
+	}
+
+	return reflect.DeepEqual(expected, actual), false
+}
+
+func formatVal(v any) string {
+	if v == nil {
+		return "(void)"
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }

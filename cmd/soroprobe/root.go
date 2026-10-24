@@ -22,11 +22,19 @@ const (
 	exitRuntime = 2
 )
 
+// proberFactory builds a Prober from resolved configuration, along with a
+// cleanup func that releases the resources behind it. Tests replace it with a
+// fixture-backed factory so commands run end to end without a network.
+type proberFactory func(config.Config) (*probe.Prober, func(), error)
+
 // options holds everything the persistent flags can set.
 type options struct {
 	cfg        config.Config
 	configPath string
 	jsonOut    bool
+	// newProber builds the Prober commands run against. A nil factory means
+	// the live one, so a zero-value options still behaves like production.
+	newProber proberFactory
 }
 
 func newRootCmd() (*cobra.Command, *options) {
@@ -61,6 +69,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
 	flags.String("sorovault-url", "", fmt.Sprintf("SoroVault registry used to type simulate arguments from the contract's interface (env %s)", config.EnvSoroVaultURL))
+	flags.Int64("base-fee", 0, fmt.Sprintf("base inclusion fee per operation in stroops (env %s) (default %d)", config.EnvBaseFee, config.DefaultBaseFee))
 	flags.BoolVar(&opts.jsonOut, "json", false, "emit JSON instead of human-readable output")
 
 	cmd.AddCommand(
@@ -106,6 +115,9 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("sorovault-url") {
 		cfg.SoroVaultURL, _ = flags.GetString("sorovault-url")
 	}
+	if flags.Changed("base-fee") {
+		cfg.BaseFee, _ = flags.GetInt64("base-fee")
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -114,13 +126,23 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	return nil
 }
 
-// prober builds a live Prober from the resolved configuration.
+// prober builds a Prober from the resolved configuration. Tests inject a
+// fixture-backed factory through options.newProber; the default is the live
+// RPC-backed one.
 func (o *options) prober() (*probe.Prober, func(), error) {
-	log := o.cfg.Logger(os.Stderr)
+	if o.newProber != nil {
+		return o.newProber(o.cfg)
+	}
+	return newLiveProber(o.cfg)
+}
+
+// newLiveProber builds a Prober over a live Stellar RPC client.
+func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
+	log := cfg.Logger(os.Stderr)
 
 	client, err := stellar.New(stellar.Options{
-		URL:     o.cfg.RPCURL,
-		Timeout: o.cfg.Timeout,
+		URL:     cfg.RPCURL,
+		Timeout: cfg.Timeout,
 		Logger:  log,
 	})
 	if err != nil {
@@ -128,8 +150,8 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 	}
 
 	var source abi.Source
-	if o.cfg.SoroVaultURL != "" {
-		vault, err := abi.NewSoroVault(o.cfg.SoroVaultURL, nil, o.cfg.Timeout)
+	if cfg.SoroVaultURL != "" {
+		vault, err := abi.NewSoroVault(cfg.SoroVaultURL, nil, cfg.Timeout)
 		if err != nil {
 			_ = client.Close()
 			return nil, nil, err
@@ -139,14 +161,15 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 
 	p, err := probe.New(probe.Options{
 		Client:        client,
-		SourceAccount: o.cfg.SourceAccount,
+		SourceAccount: cfg.SourceAccount,
 		Thresholds: health.Thresholds{
-			Warn:     o.cfg.WarnLedgers,
-			Critical: o.cfg.CriticalLedgers,
+			Warn:     cfg.WarnLedgers,
+			Critical: cfg.CriticalLedgers,
 		},
 		Logger:  log,
 		ABI:     source,
-		Network: abi.NetworkName(o.cfg.NetworkPassphrase),
+		Network: abi.NetworkName(cfg.NetworkPassphrase),
+		BaseFee: cfg.BaseFee,
 	})
 	if err != nil {
 		_ = client.Close()
