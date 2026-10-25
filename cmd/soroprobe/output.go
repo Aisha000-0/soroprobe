@@ -295,6 +295,9 @@ func renderInspect(w io.Writer, r *probe.InspectResult) error {
 
 	if !r.Deployed {
 		bw.printf("%s\n", s.red("NOT DEPLOYED  no contract instance entry found on this network"))
+		if r.CloseTimeNote != "" {
+			bw.printf("%s\n", s.dim("note: "+r.CloseTimeNote))
+		}
 		bw.printf("\n%s\n", s.dim(fmt.Sprintf("checked at ledger %d", r.LatestLedger)))
 		return bw.err
 	}
@@ -329,6 +332,9 @@ func renderInspect(w io.Writer, r *probe.InspectResult) error {
 	}
 
 	bw.printf("\n%s %s\n", s.bold("overall"), s.status(r.Status))
+	if r.CloseTimeNote != "" {
+		bw.printf("%s\n", s.dim("note: "+r.CloseTimeNote))
+	}
 	bw.printf("%s\n", s.dim(fmt.Sprintf("checked at ledger %d", r.LatestLedger)))
 	return bw.err
 }
@@ -375,6 +381,9 @@ func renderCheck(w io.Writer, r *probe.CheckResult) error {
 		bw.printf("%s\n", s.red("FAIL"))
 	}
 	bw.printf("%s\n", s.dim(fmt.Sprintf("checked at ledger %d", r.LatestLedger)))
+	if r.CloseTimeNote != "" {
+		bw.printf("%s\n", s.dim("note: "+r.CloseTimeNote))
+	}
 	return bw.err
 }
 
@@ -404,6 +413,9 @@ func renderBatch(w io.Writer, r *probe.BatchResult) error {
 			verdict, detail = s.red("FAIL "), firstNotPassing(item.Result, probe.OutcomeFail)
 		}
 		bw.printf("  %s  %-*s  %s\n", verdict, width, item.Name, detail)
+		if item.Result != nil && item.Result.CloseTimeNote != "" {
+			bw.printf("  %s\n", s.dim("note: "+item.Result.CloseTimeNote))
+		}
 	}
 
 	bw.printf("\n%s %d passed, %d failed, %d could not run\n", s.bold("result"), passed, failed, errored)

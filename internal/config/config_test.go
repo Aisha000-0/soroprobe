@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/soroworks/soroprobe/internal/config"
+	"github.com/soroworks/soroprobe/internal/health"
 )
 
 // writeConfig writes a config file into a temp dir and returns its path.
@@ -109,6 +110,22 @@ func TestLoadFromFile(t *testing.T) {
 	assert.Equal(t, "http://vault.internal:8080", cfg.SoroVaultURL)
 	// Unset keys keep their defaults.
 	assert.Equal(t, config.DefaultSourceAccount, cfg.SourceAccount)
+}
+
+func TestLoadPerKindThresholdOverrides(t *testing.T) {
+	path := writeConfig(t, `{"thresholds":{"instance":{"warn":500,"critical":50},"code":{"warn":900}}}`)
+	t.Setenv(config.EnvDataCriticalLedgers, "25")
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.ThresholdOverrides.Instance)
+	assert.EqualValues(t, 500, *cfg.ThresholdOverrides.Instance.Warn)
+	assert.EqualValues(t, 50, *cfg.ThresholdOverrides.Instance.Critical)
+	require.NotNil(t, cfg.ThresholdOverrides.Code)
+	assert.EqualValues(t, 900, *cfg.ThresholdOverrides.Code.Warn)
+	assert.Nil(t, cfg.ThresholdOverrides.Code.Critical, "an omitted value falls back to the global threshold")
+	require.NotNil(t, cfg.ThresholdOverrides.Data)
+	assert.EqualValues(t, 25, *cfg.ThresholdOverrides.Data.Critical)
 }
 
 func TestLoadFromYAMLFile(t *testing.T) {
@@ -432,6 +449,10 @@ func TestValidate(t *testing.T) {
 		{"zero timeout", func(c *config.Config) { c.Timeout = 0 }, "timeout must be positive"},
 		{"negative timeout", func(c *config.Config) { c.Timeout = -time.Second }, "timeout must be positive"},
 		{"critical above warn", func(c *config.Config) { c.WarnLedgers = 10; c.CriticalLedgers = 100 }, "must not exceed"},
+		{"per-kind critical above warn", func(c *config.Config) {
+			warn, critical := uint32(10), uint32(100)
+			c.ThresholdOverrides.Code = &health.ThresholdOverride{Warn: &warn, Critical: &critical}
+		}, "code critical threshold"},
 		{"unknown log level", func(c *config.Config) { c.LogLevel = "chatty" }, "unknown log level"},
 		{"unknown log format", func(c *config.Config) { c.LogFormat = "xml" }, "unknown log format"},
 		{

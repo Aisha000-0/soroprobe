@@ -445,6 +445,8 @@ func (p *Prober) typeArgs(ctx context.Context, req SimulateRequest) (typedArgs, 
 		}
 		if errors.Is(err, abi.ErrUnknownContract) {
 			out.note = "contract not found in the interface registry; argument types were inferred"
+		} else if errors.Is(err, abi.ErrNoWasm) {
+			out.note = "stellar asset contract has no WASM interface; argument types were inferred"
 		} else {
 			out.note = "interface registry unavailable; argument types were inferred: " + err.Error()
 		}

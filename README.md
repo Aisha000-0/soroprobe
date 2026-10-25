@@ -210,12 +210,19 @@ days" means something very different for a temporary entry than a persistent one
 | `missing` | No such entry exists on the ledger |
 | `unknown` | Entry exists but reported no TTL |
 
-Thresholds are configurable with `--warn-ledgers` and `--critical-ledgers`.
+Global thresholds are configurable with `--warn-ledgers` and
+`--critical-ledgers`. Optional instance, code and data thresholds override
+those values independently; each kind accepts `warn` and `critical` values.
+For example, use `--data-warn-ledgers` or `DATA_WARN_LEDGERS`. The config file
+uses a `thresholds` object with `instance`, `code` and `data` objects, each
+containing optional `warn` and `critical` ledger counts. Reports include the
+effective thresholds applied to every entry.
 
-**A note on the time estimates.** SoroProbe converts ledgers to wall-clock time
-at the network's five-second target close time, which measured exactly 5.00s
-when verified. Real close times drift slightly, so treat the **ledger count as
-authoritative** and the duration as a convenience.
+**A note on the time estimates.** SoroProbe measures the average close time of
+the 20 most recent ledgers and uses it to convert ledger counts to wall-clock
+time. If RPC cannot provide that measurement, it falls back to the five-second
+target and says so in the report. Treat the **ledger count as authoritative**
+and the duration as a convenience.
 
 **Three things worth knowing:**
 
@@ -784,9 +791,16 @@ Precedence, lowest to highest: **defaults → top-level config file keys → pro
 | `INSPECT_CACHE_TTL` | `--inspect-cache-ttl` (on `serve`) | `0s` (off) |
 | `WARN_LEDGERS` | `--warn-ledgers` | `120960` (≈7 days) |
 | `CRITICAL_LEDGERS` | `--critical-ledgers` | `17280` (≈1 day) |
+| `INSTANCE_WARN_LEDGERS`, `INSTANCE_CRITICAL_LEDGERS` | `--instance-warn-ledgers`, `--instance-critical-ledgers` | global thresholds |
+| `CODE_WARN_LEDGERS`, `CODE_CRITICAL_LEDGERS` | `--code-warn-ledgers`, `--code-critical-ledgers` | global thresholds |
+| `DATA_WARN_LEDGERS`, `DATA_CRITICAL_LEDGERS` | `--data-warn-ledgers`, `--data-critical-ledgers` | global thresholds |
 | `SOROVAULT_URL` | `--sorovault-url` | unset — [type arguments from SoroVault](#typing-arguments-from-sorovault) |
 | `SOROPROBE_CONFIG` | `--config` | `./soroprobe.json` (then `./soroprobe.yaml`, `./soroprobe.yml`) if present |
 | `SOROPROBE_PROFILE` | `--profile` | unset |
+
+To type arguments from a contract's on-chain interface instead of SoroVault,
+pass `--abi-from-chain`. Stellar Asset Contracts have no Wasm interface and
+continue with inferred argument types, with a note in the result.
 
 Logs go to **stderr** in both formats, so redirecting stdout (or consuming
 `--json` output) never mixes a log line into the document being parsed.

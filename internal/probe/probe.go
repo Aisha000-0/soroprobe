@@ -19,11 +19,13 @@ import (
 
 // Prober runs health and simulation probes against a network.
 type Prober struct {
-	client     stellar.Client
-	codec      scval.Codec
-	source     string
-	thresholds health.Thresholds
-	log        *slog.Logger
+	client             stellar.Client
+	codec              scval.Codec
+	source             string
+	thresholds         health.Thresholds
+	thresholdOverrides health.ThresholdOverrides
+	log                *slog.Logger
+	ledgerTime         *ledgerTimeCache
 
 	abi          abi.Source
 	network      string
@@ -42,6 +44,8 @@ type Options struct {
 	SourceAccount string
 	// Thresholds control TTL classification. Defaults to health.DefaultThresholds.
 	Thresholds health.Thresholds
+	// ThresholdOverrides optionally replace global thresholds by entry kind.
+	ThresholdOverrides health.ThresholdOverrides
 	// Logger receives debug tracing. Defaults to a discarding logger.
 	Logger *slog.Logger
 
@@ -88,15 +92,17 @@ func New(opts Options) (*Prober, error) {
 		baseFee = DefaultBaseFee
 	}
 	return &Prober{
-		client:       opts.Client,
-		codec:        opts.Codec,
-		source:       opts.SourceAccount,
-		thresholds:   opts.Thresholds,
-		log:          opts.Logger,
-		abi:          opts.ABI,
-		network:      opts.Network,
-		inspectCache: cache,
-		baseFee:      baseFee,
+		client:             opts.Client,
+		codec:              opts.Codec,
+		source:             opts.SourceAccount,
+		thresholds:         opts.Thresholds,
+		thresholdOverrides: opts.ThresholdOverrides,
+		log:                opts.Logger,
+		ledgerTime:         &ledgerTimeCache{},
+		abi:                opts.ABI,
+		network:            opts.Network,
+		inspectCache:       cache,
+		baseFee:            baseFee,
 	}, nil
 }
 

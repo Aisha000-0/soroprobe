@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/strkey"
 	"go.yaml.in/yaml/v3"
@@ -64,22 +65,28 @@ const (
 
 // Environment variable names.
 const (
-	EnvRPCURL            = "RPC_URL"
-	EnvNetworkPassphrase = "NETWORK_PASSPHRASE"
-	EnvSourceAccount     = "SOURCE_ACCOUNT"
-	EnvHTTPAddr          = "HTTP_ADDR"
-	EnvCORSOrigins       = "CORS_ORIGINS"
-	EnvLogLevel          = "LOG_LEVEL"
-	EnvLogFormat         = "LOG_FORMAT"
-	EnvTimeout           = "RPC_TIMEOUT"
-	EnvWarnLedgers       = "WARN_LEDGERS"
-	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
-	EnvConfigFile        = "SOROPROBE_CONFIG"
-	EnvProfile           = "SOROPROBE_PROFILE"
-	EnvSoroVaultURL      = "SOROVAULT_URL"
-	EnvBaseFee           = "BASE_FEE"
-	EnvInspectCacheTTL   = "INSPECT_CACHE_TTL"
-	EnvAPIToken          = "API_TOKEN"
+	EnvRPCURL                  = "RPC_URL"
+	EnvNetworkPassphrase       = "NETWORK_PASSPHRASE"
+	EnvSourceAccount           = "SOURCE_ACCOUNT"
+	EnvHTTPAddr                = "HTTP_ADDR"
+	EnvCORSOrigins             = "CORS_ORIGINS"
+	EnvLogLevel                = "LOG_LEVEL"
+	EnvLogFormat               = "LOG_FORMAT"
+	EnvTimeout                 = "RPC_TIMEOUT"
+	EnvWarnLedgers             = "WARN_LEDGERS"
+	EnvCriticalLedgers         = "CRITICAL_LEDGERS"
+	EnvConfigFile              = "SOROPROBE_CONFIG"
+	EnvSoroVaultURL            = "SOROVAULT_URL"
+	EnvBaseFee                 = "BASE_FEE"
+	EnvInspectCacheTTL         = "INSPECT_CACHE_TTL"
+	EnvAPIToken                = "API_TOKEN"
+	EnvInstanceWarnLedgers     = "INSTANCE_WARN_LEDGERS"
+	EnvInstanceCriticalLedgers = "INSTANCE_CRITICAL_LEDGERS"
+	EnvCodeWarnLedgers         = "CODE_WARN_LEDGERS"
+	EnvCodeCriticalLedgers     = "CODE_CRITICAL_LEDGERS"
+	EnvDataWarnLedgers         = "DATA_WARN_LEDGERS"
+	EnvDataCriticalLedgers     = "DATA_CRITICAL_LEDGERS"
+	EnvProfile                 = "SOROPROBE_PROFILE"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -108,6 +115,8 @@ type Config struct {
 	// CriticalLedgers is the remaining-TTL threshold, in ledgers, below which
 	// an entry is reported as critical.
 	CriticalLedgers uint32 `json:"critical_ledgers"`
+	// ThresholdOverrides optionally adjusts TTL thresholds by entry kind.
+	ThresholdOverrides health.ThresholdOverrides `json:"thresholds,omitempty"`
 	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
 	// interfaces type simulate arguments. Empty disables the lookup.
 	SoroVaultURL string `json:"sorovault_url"`
@@ -146,19 +155,20 @@ func Default() Config {
 // fileConfig mirrors Config but with pointers, so that "absent" is
 // distinguishable from "set to the zero value". It can also contain named profiles.
 type fileConfig struct {
-	RPCURL            *string                `json:"rpc_url" yaml:"rpc_url"`
-	NetworkPassphrase *string                `json:"network_passphrase" yaml:"network_passphrase"`
-	SourceAccount     *string                `json:"source_account" yaml:"source_account"`
-	HTTPAddr          *string                `json:"http_addr" yaml:"http_addr"`
-	LogLevel          *string                `json:"log_level" yaml:"log_level"`
-	LogFormat         *string                `json:"log_format" yaml:"log_format"`
-	Timeout           *string                `json:"timeout" yaml:"timeout"`
-	WarnLedgers       *uint32                `json:"warn_ledgers" yaml:"warn_ledgers"`
-	CriticalLedgers   *uint32                `json:"critical_ledgers" yaml:"critical_ledgers"`
-	SoroVaultURL      *string                `json:"sorovault_url" yaml:"sorovault_url"`
-	BaseFee           *int64                 `json:"base_fee" yaml:"base_fee"`
-	InspectCacheTTL   *string                `json:"inspect_cache_ttl" yaml:"inspect_cache_ttl"`
-	Profiles          map[string]*fileConfig `json:"profiles" yaml:"profiles"`
+	RPCURL             *string                    `json:"rpc_url" yaml:"rpc_url"`
+	NetworkPassphrase  *string                    `json:"network_passphrase" yaml:"network_passphrase"`
+	SourceAccount      *string                    `json:"source_account" yaml:"source_account"`
+	HTTPAddr           *string                    `json:"http_addr" yaml:"http_addr"`
+	LogLevel           *string                    `json:"log_level" yaml:"log_level"`
+	LogFormat          *string                    `json:"log_format" yaml:"log_format"`
+	Timeout            *string                    `json:"timeout" yaml:"timeout"`
+	WarnLedgers        *uint32                    `json:"warn_ledgers" yaml:"warn_ledgers"`
+	CriticalLedgers    *uint32                    `json:"critical_ledgers" yaml:"critical_ledgers"`
+	ThresholdOverrides *health.ThresholdOverrides `json:"thresholds" yaml:"thresholds"`
+	SoroVaultURL       *string                    `json:"sorovault_url" yaml:"sorovault_url"`
+	BaseFee            *int64                     `json:"base_fee" yaml:"base_fee"`
+	InspectCacheTTL    *string                    `json:"inspect_cache_ttl" yaml:"inspect_cache_ttl"`
+	Profiles           map[string]*fileConfig     `json:"profiles" yaml:"profiles"`
 	// APIToken is accepted so that a file carrying the key still loads, and
 	// is never applied: the token is a secret and comes from API_TOKEN only.
 	APIToken *string `json:"api_token" yaml:"api_token"`
@@ -257,6 +267,9 @@ func applyValues(cfg *Config, path string, fc *fileConfig) error {
 	}
 	if fc.CriticalLedgers != nil {
 		cfg.CriticalLedgers = *fc.CriticalLedgers
+	}
+	if fc.ThresholdOverrides != nil {
+		cfg.ThresholdOverrides = *fc.ThresholdOverrides
 	}
 	if fc.BaseFee != nil {
 		cfg.BaseFee = *fc.BaseFee
@@ -360,7 +373,10 @@ func applyEnv(cfg *Config) error {
 	if err := setUint32FromEnv(&cfg.CriticalLedgers, EnvCriticalLedgers); err != nil {
 		return err
 	}
-	return setInt64FromEnv(&cfg.BaseFee, EnvBaseFee)
+	if err := setInt64FromEnv(&cfg.BaseFee, EnvBaseFee); err != nil {
+		return err
+	}
+	return applyThresholdOverrideEnv(&cfg.ThresholdOverrides)
 }
 
 func setInt64FromEnv(dst *int64, key string) error {
@@ -374,6 +390,58 @@ func setInt64FromEnv(dst *int64, key string) error {
 	}
 	*dst = n
 	return nil
+}
+
+func applyThresholdOverrideEnv(overrides *health.ThresholdOverrides) error {
+	for _, item := range []struct {
+		kind     health.EntryKind
+		warn     string
+		critical string
+	}{
+		{health.EntryKindInstance, EnvInstanceWarnLedgers, EnvInstanceCriticalLedgers},
+		{health.EntryKindCode, EnvCodeWarnLedgers, EnvCodeCriticalLedgers},
+		{health.EntryKindData, EnvDataWarnLedgers, EnvDataCriticalLedgers},
+	} {
+		for _, field := range []struct {
+			key string
+			set func(*health.ThresholdOverride, *uint32)
+		}{
+			{item.warn, func(o *health.ThresholdOverride, n *uint32) { o.Warn = n }},
+			{item.critical, func(o *health.ThresholdOverride, n *uint32) { o.Critical = n }},
+		} {
+			v := lookup(field.key)
+			if v == nil {
+				continue
+			}
+			n, err := strconv.ParseUint(*v, 10, 32)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", field.key, err)
+			}
+			value := uint32(n)
+			field.set(thresholdOverride(overrides, item.kind), &value)
+		}
+	}
+	return nil
+}
+
+func thresholdOverride(overrides *health.ThresholdOverrides, kind health.EntryKind) *health.ThresholdOverride {
+	switch kind {
+	case health.EntryKindInstance:
+		if overrides.Instance == nil {
+			overrides.Instance = &health.ThresholdOverride{}
+		}
+		return overrides.Instance
+	case health.EntryKindCode:
+		if overrides.Code == nil {
+			overrides.Code = &health.ThresholdOverride{}
+		}
+		return overrides.Code
+	default:
+		if overrides.Data == nil {
+			overrides.Data = &health.ThresholdOverride{}
+		}
+		return overrides.Data
+	}
 }
 
 func setUint32FromEnv(dst *uint32, key string) error {
@@ -426,6 +494,13 @@ func (c Config) Validate() error {
 	}
 	if c.InspectCacheTTL < 0 {
 		return fmt.Errorf("inspect cache ttl must not be negative, got %s", c.InspectCacheTTL)
+	}
+	global := health.Thresholds{Warn: c.WarnLedgers, Critical: c.CriticalLedgers}
+	for _, kind := range []health.EntryKind{health.EntryKindInstance, health.EntryKindCode, health.EntryKindData} {
+		thresholds := health.ResolveThresholds(kind, global, c.ThresholdOverrides)
+		if thresholds.Critical > thresholds.Warn {
+			return fmt.Errorf("%s critical threshold (%d) must not exceed warning threshold (%d)", kind, thresholds.Critical, thresholds.Warn)
+		}
 	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err

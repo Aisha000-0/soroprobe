@@ -72,6 +72,8 @@ type CheckResult struct {
 	Simulate *SimulateResult `json:"simulate,omitempty"`
 	// LatestLedger is the ledger the assessment was made against.
 	LatestLedger uint32 `json:"latest_ledger"`
+	// CloseTimeNote explains the measured duration estimate or its fallback.
+	CloseTimeNote string `json:"close_time_note"`
 }
 
 // CheckStep is one pluggable step in the health check pipeline.
@@ -158,11 +160,12 @@ func (p *Prober) Check(ctx context.Context, req CheckRequest) (*CheckResult, err
 	}
 
 	result := &CheckResult{
-		ContractID:   req.ContractID,
-		Inspect:      inspect,
-		Status:       inspect.Status,
-		Simulate:     sim,
-		LatestLedger: inspect.LatestLedger,
+		ContractID:    req.ContractID,
+		Inspect:       inspect,
+		Status:        inspect.Status,
+		Simulate:      sim,
+		LatestLedger:  inspect.LatestLedger,
+		CloseTimeNote: inspect.CloseTimeNote,
 	}
 
 	for _, step := range p.checkSteps() {

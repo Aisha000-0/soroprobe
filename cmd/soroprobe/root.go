@@ -35,7 +35,8 @@ type options struct {
 	jsonOut    bool
 	// newProber builds the Prober commands run against. A nil factory means
 	// the live one, so a zero-value options still behaves like production.
-	newProber proberFactory
+	newProber    proberFactory
+	abiFromChain bool
 }
 
 func newRootCmd() (*cobra.Command, *options) {
@@ -71,7 +72,14 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.Duration("timeout", 0, fmt.Sprintf("per-request RPC timeout (env %s)", config.EnvTimeout))
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
+	flags.Uint32("instance-warn-ledgers", 0, "warning threshold for instance entries")
+	flags.Uint32("instance-critical-ledgers", 0, "critical threshold for instance entries")
+	flags.Uint32("code-warn-ledgers", 0, "warning threshold for code entries")
+	flags.Uint32("code-critical-ledgers", 0, "critical threshold for code entries")
+	flags.Uint32("data-warn-ledgers", 0, "warning threshold for data entries")
+	flags.Uint32("data-critical-ledgers", 0, "critical threshold for data entries")
 	flags.String("sorovault-url", "", fmt.Sprintf("SoroVault registry used to type simulate arguments from the contract's interface (env %s)", config.EnvSoroVaultURL))
+	flags.BoolVar(&opts.abiFromChain, "abi-from-chain", false, "type simulate arguments from the contract interface stored on chain")
 	flags.Int64("base-fee", 0, fmt.Sprintf("base inclusion fee per operation in stroops (env %s) (default %d)", config.EnvBaseFee, config.DefaultBaseFee))
 	flags.BoolVar(&opts.jsonOut, "json", false, "emit JSON instead of human-readable output")
 
@@ -118,6 +126,46 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("critical-ledgers") {
 		cfg.CriticalLedgers, _ = flags.GetUint32("critical-ledgers")
 	}
+	for _, item := range []struct {
+		flag  string
+		kind  health.EntryKind
+		field string
+	}{
+		{"instance-warn-ledgers", health.EntryKindInstance, "warn"},
+		{"instance-critical-ledgers", health.EntryKindInstance, "critical"},
+		{"code-warn-ledgers", health.EntryKindCode, "warn"},
+		{"code-critical-ledgers", health.EntryKindCode, "critical"},
+		{"data-warn-ledgers", health.EntryKindData, "warn"},
+		{"data-critical-ledgers", health.EntryKindData, "critical"},
+	} {
+		if !flags.Changed(item.flag) {
+			continue
+		}
+		value, _ := flags.GetUint32(item.flag)
+		var override *health.ThresholdOverride
+		switch item.kind {
+		case health.EntryKindInstance:
+			if cfg.ThresholdOverrides.Instance == nil {
+				cfg.ThresholdOverrides.Instance = &health.ThresholdOverride{}
+			}
+			override = cfg.ThresholdOverrides.Instance
+		case health.EntryKindCode:
+			if cfg.ThresholdOverrides.Code == nil {
+				cfg.ThresholdOverrides.Code = &health.ThresholdOverride{}
+			}
+			override = cfg.ThresholdOverrides.Code
+		default:
+			if cfg.ThresholdOverrides.Data == nil {
+				cfg.ThresholdOverrides.Data = &health.ThresholdOverride{}
+			}
+			override = cfg.ThresholdOverrides.Data
+		}
+		if item.field == "warn" {
+			override.Warn = &value
+		} else {
+			override.Critical = &value
+		}
+	}
 	if flags.Changed("sorovault-url") {
 		cfg.SoroVaultURL, _ = flags.GetString("sorovault-url")
 	}
@@ -144,11 +192,12 @@ func (o *options) prober() (*probe.Prober, func(), error) {
 	if o.newProber != nil {
 		return o.newProber(o.cfg)
 	}
-	return newLiveProber(o.cfg)
+	return newLiveProber(o.cfg, o.abiFromChain)
 }
 
-// newLiveProber builds a Prober over a live Stellar RPC client.
-func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
+// newLiveProber builds a Prober over a live Stellar RPC client. abiFromChain
+// types arguments from the interface stored on chain instead of SoroVault.
+func newLiveProber(cfg config.Config, abiFromChain bool) (*probe.Prober, func(), error) {
 	log := cfg.Logger(os.Stderr)
 
 	client, err := stellar.New(stellar.Options{
@@ -161,7 +210,9 @@ func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
 	}
 
 	var source abi.Source
-	if cfg.SoroVaultURL != "" {
+	if abiFromChain {
+		source = abi.NewChainSource(client)
+	} else if cfg.SoroVaultURL != "" {
 		vault, err := abi.NewSoroVault(cfg.SoroVaultURL, nil, cfg.Timeout)
 		if err != nil {
 			_ = client.Close()
@@ -177,11 +228,12 @@ func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
 			Warn:     cfg.WarnLedgers,
 			Critical: cfg.CriticalLedgers,
 		},
-		Logger:          log,
-		ABI:             source,
-		Network:         abi.NetworkName(cfg.NetworkPassphrase),
-		BaseFee:         cfg.BaseFee,
-		InspectCacheTTL: cfg.InspectCacheTTL,
+		ThresholdOverrides: cfg.ThresholdOverrides,
+		Logger:             log,
+		ABI:                source,
+		Network:            abi.NetworkName(cfg.NetworkPassphrase),
+		BaseFee:            cfg.BaseFee,
+		InspectCacheTTL:    cfg.InspectCacheTTL,
 	})
 	if err != nil {
 		_ = client.Close()

@@ -169,6 +169,20 @@ func TestAllPersistentFlagsAreApplied(t *testing.T) {
 	assert.EqualValues(t, 99, cfg.CriticalLedgers)
 }
 
+func TestPerKindThresholdAndChainABIFlags(t *testing.T) {
+	cfg := resolveConfig(t, "simulate", "--data-warn-ledgers", "500", "--data-critical-ledgers", "25", "--abi-from-chain")
+	require.NotNil(t, cfg.ThresholdOverrides.Data)
+	assert.EqualValues(t, 500, *cfg.ThresholdOverrides.Data.Warn)
+	assert.EqualValues(t, 25, *cfg.ThresholdOverrides.Data.Critical)
+
+	cmd, opts := newRootCmd()
+	sub, rest, err := cmd.Find([]string{"simulate", "--abi-from-chain"})
+	require.NoError(t, err)
+	require.NoError(t, sub.ParseFlags(rest))
+	require.NoError(t, opts.resolve(sub))
+	assert.True(t, opts.abiFromChain)
+}
+
 func TestLogFormatDefaultsToText(t *testing.T) {
 	cfg := resolveConfig(t, "inspect")
 	assert.Equal(t, "text", cfg.LogFormat)
