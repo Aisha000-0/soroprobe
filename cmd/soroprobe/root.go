@@ -31,6 +31,7 @@ type proberFactory func(config.Config) (*probe.Prober, func(), error)
 type options struct {
 	cfg        config.Config
 	configPath string
+	profile    string
 	jsonOut    bool
 	// newProber builds the Prober commands run against. A nil factory means
 	// the live one, so a zero-value options still behaves like production.
@@ -60,7 +61,8 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	}
 
 	flags := cmd.PersistentFlags()
-	flags.StringVar(&opts.configPath, "config", "", "path to a JSON config file")
+	flags.StringVar(&opts.configPath, "config", "", "path to a config file")
+	flags.StringVar(&opts.profile, "profile", "", fmt.Sprintf("select a configuration profile from the config file (env %s)", config.EnvProfile))
 	flags.String("rpc-url", "", fmt.Sprintf("Stellar RPC endpoint (env %s) (default %q)", config.EnvRPCURL, config.DefaultRPCURL))
 	flags.String("network-passphrase", "", fmt.Sprintf("network passphrase (env %s)", config.EnvNetworkPassphrase))
 	flags.String("source-account", "", fmt.Sprintf("public key used to build transactions for simulation (env %s)", config.EnvSourceAccount))
@@ -86,7 +88,7 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 // resolve loads config from file and environment, then applies any flags the
 // user actually set, so that flags win over the environment.
 func (o *options) resolve(cmd *cobra.Command) error {
-	cfg, err := config.Load(o.configPath)
+	cfg, err := config.LoadWithProfile(o.configPath, o.profile)
 	if err != nil {
 		return err
 	}

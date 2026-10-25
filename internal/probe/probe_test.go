@@ -354,6 +354,87 @@ func TestInspectDataKeyDurabilityChangesTheKey(t *testing.T) {
 	assert.NotEqual(t, persistent.EntryRequests[0], temporary.EntryRequests[0])
 }
 
+func TestInspectDataKeysWithRealFixtures(t *testing.T) {
+	t.Parallel()
+
+	fake := stellartest.NewFake(t)
+	p := newProber(t, fake, health.DefaultThresholds)
+
+	t.Run("persistent data entry found", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := p.Inspect(context.Background(), probe.InspectRequest{
+			ContractID:     stellartest.SACContract,
+			DataKeys:       []string{stellartest.PersistentDataKey},
+			DataDurability: health.DurabilityPersistent,
+		})
+		require.NoError(t, err)
+
+		require.Len(t, result.Data, 1)
+		entry := result.Data[0]
+		assert.Equal(t, stellartest.PersistentDataKey, entry.Key)
+		assert.True(t, entry.Present)
+		assert.Equal(t, health.DurabilityPersistent, entry.Durability)
+		assert.Equal(t, health.StatusHealthy, entry.Status)
+		assert.NotNil(t, entry.LiveUntilLedger)
+		assert.Equal(t, uint32(6947527), *entry.LiveUntilLedger)
+		assert.Contains(t, entry.Summary, "live for")
+	})
+
+	t.Run("temporary data entry found", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := p.Inspect(context.Background(), probe.InspectRequest{
+			ContractID:     stellartest.SACContract,
+			DataKeys:       []string{stellartest.TemporaryDataKey},
+			DataDurability: health.DurabilityTemporary,
+		})
+		require.NoError(t, err)
+
+		require.Len(t, result.Data, 1)
+		entry := result.Data[0]
+		assert.Equal(t, stellartest.TemporaryDataKey, entry.Key)
+		assert.True(t, entry.Present)
+		assert.Equal(t, health.DurabilityTemporary, entry.Durability)
+		assert.Equal(t, health.StatusHealthy, entry.Status)
+		assert.NotNil(t, entry.LiveUntilLedger)
+		assert.Equal(t, uint32(4532485), *entry.LiveUntilLedger)
+		assert.Contains(t, entry.Summary, "live for")
+	})
+
+	t.Run("missing temporary data entry", func(t *testing.T) {
+		t.Parallel()
+
+		missingKey := "sym:NoSuchTemporaryEntry"
+		result, err := p.Inspect(context.Background(), probe.InspectRequest{
+			ContractID:     stellartest.SACContract,
+			DataKeys:       []string{missingKey},
+			DataDurability: health.DurabilityTemporary,
+		})
+		require.NoError(t, err)
+
+		require.Len(t, result.Data, 1)
+		entry := result.Data[0]
+		assert.Equal(t, missingKey, entry.Key)
+		assert.False(t, entry.Present)
+		assert.Equal(t, health.DurabilityTemporary, entry.Durability)
+		assert.Equal(t, health.StatusMissing, entry.Status)
+		assert.Equal(t, health.StatusMissing, result.Status)
+		// For an expired or missing temporary entry, the durability consequence is permanent loss.
+		assert.Contains(t, entry.Durability.OnExpiry(), "gone permanently")
+		assert.False(t, entry.Durability.Archivable())
+	})
+
+	t.Run("expired temporary data entry consequence", func(t *testing.T) {
+		t.Parallel()
+
+		// An expired temporary entry on ledger explicitly describes that it is gone permanently.
+		expiredTTL := health.Evaluate(func(u uint32) *uint32 { return &u }(100), 200, health.DurabilityTemporary, health.DefaultThresholds)
+		assert.Equal(t, health.StatusExpired, expiredTTL.Status)
+		assert.Contains(t, expiredTTL.Describe(), "gone permanently")
+	})
+}
+
 func TestInspectRejectsBadContractID(t *testing.T) {
 	t.Parallel()
 

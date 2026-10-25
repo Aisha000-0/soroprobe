@@ -237,6 +237,57 @@ func TestVersionCommandNeedsNoConfig(t *testing.T) {
 	assert.NotEmpty(t, out.String())
 }
 
+func TestProfileSelection(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "soroprobe.json")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`{
+		"rpc_url": "https://default.example.com",
+		"network_passphrase": "Default Network",
+		"warn_ledgers": 100,
+		"critical_ledgers": 10,
+		"profiles": {
+			"mainnet": {
+				"rpc_url": "https://mainnet.example.com",
+				"network_passphrase": "Public Global Stellar Network ; September 2015",
+				"warn_ledgers": 200,
+				"critical_ledgers": 20
+			},
+			"testnet": {
+				"rpc_url": "https://testnet.example.com"
+			}
+		}
+	}`), 0o600))
+
+	t.Run("profile selected via flag", func(t *testing.T) {
+		cfg := resolveConfig(t, "inspect", "--config", cfgPath, "--profile", "mainnet")
+		assert.Equal(t, "https://mainnet.example.com", cfg.RPCURL)
+		assert.Equal(t, "Public Global Stellar Network ; September 2015", cfg.NetworkPassphrase)
+		assert.EqualValues(t, 200, cfg.WarnLedgers)
+	})
+
+	t.Run("profile selected via env", func(t *testing.T) {
+		t.Setenv(config.EnvProfile, "mainnet")
+		cfg := resolveConfig(t, "inspect", "--config", cfgPath)
+		assert.Equal(t, "https://mainnet.example.com", cfg.RPCURL)
+		assert.Equal(t, "Public Global Stellar Network ; September 2015", cfg.NetworkPassphrase)
+		assert.EqualValues(t, 200, cfg.WarnLedgers)
+	})
+
+	t.Run("flag profile overrides env profile", func(t *testing.T) {
+		t.Setenv(config.EnvProfile, "mainnet")
+		cfg := resolveConfig(t, "inspect", "--config", cfgPath, "--profile", "testnet")
+		assert.Equal(t, "https://testnet.example.com", cfg.RPCURL)
+		assert.Equal(t, "Default Network", cfg.NetworkPassphrase)
+	})
+
+	t.Run("unknown profile returns error with available profiles", func(t *testing.T) {
+		err := runWith(t, "inspect", "CDLZ", "--config", cfgPath, "--profile", "futurenet")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown profile "futurenet"`)
+		assert.Contains(t, err.Error(), "mainnet, testnet")
+	})
+}
+
 func TestCommandArgumentValidation(t *testing.T) {
 	tests := []struct {
 		name string

@@ -26,6 +26,15 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
+// writeConfigFile writes a named config file into a temp dir and returns its path.
+func writeConfigFile(t *testing.T, filename, body string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), filename)
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return path
+}
+
 func TestDefaultsTargetTestnet(t *testing.T) {
 	cfg := config.Default()
 
@@ -100,6 +109,203 @@ func TestLoadFromFile(t *testing.T) {
 	assert.Equal(t, "http://vault.internal:8080", cfg.SoroVaultURL)
 	// Unset keys keep their defaults.
 	assert.Equal(t, config.DefaultSourceAccount, cfg.SourceAccount)
+}
+
+func TestLoadFromYAMLFile(t *testing.T) {
+	for _, filename := range []string{"soroprobe.yaml", "soroprobe.yml"} {
+		t.Run(filename, func(t *testing.T) {
+			path := writeConfigFile(t, filename, `
+# Configuration for SoroProbe
+rpc_url: "https://rpc.example.com"
+network_passphrase: "Custom Network"
+http_addr: ":9999"
+log_level: "debug"
+timeout: "5s"
+warn_ledgers: 100
+critical_ledgers: 10
+sorovault_url: "http://vault.internal:8080"
+`)
+
+			cfg, err := config.Load(path)
+			require.NoError(t, err)
+
+			assert.Equal(t, "https://rpc.example.com", cfg.RPCURL)
+			assert.Equal(t, "Custom Network", cfg.NetworkPassphrase)
+			assert.Equal(t, ":9999", cfg.HTTPAddr)
+			assert.Equal(t, "debug", cfg.LogLevel)
+			assert.Equal(t, 5*time.Second, cfg.Timeout)
+			assert.EqualValues(t, 100, cfg.WarnLedgers)
+			assert.EqualValues(t, 10, cfg.CriticalLedgers)
+			assert.Equal(t, "http://vault.internal:8080", cfg.SoroVaultURL)
+			// Unset keys keep their defaults.
+			assert.Equal(t, config.DefaultSourceAccount, cfg.SourceAccount)
+		})
+	}
+}
+
+func TestDefaultLookupOrder(t *testing.T) {
+	t.Run("json before yaml and yml", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "soroprobe.json"), []byte(`{"rpc_url":"https://json.example.com"}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "soroprobe.yaml"), []byte(`rpc_url: "https://yaml.example.com"`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "soroprobe.yml"), []byte(`rpc_url: "https://yml.example.com"`), 0o600))
+
+		cfg, err := config.Load("")
+		require.NoError(t, err)
+		assert.Equal(t, "https://json.example.com", cfg.RPCURL)
+	})
+
+	t.Run("yaml before yml when json absent", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "soroprobe.yaml"), []byte(`rpc_url: "https://yaml.example.com"`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "soroprobe.yml"), []byte(`rpc_url: "https://yml.example.com"`), 0o600))
+
+		cfg, err := config.Load("")
+		require.NoError(t, err)
+		assert.Equal(t, "https://yaml.example.com", cfg.RPCURL)
+	})
+
+	t.Run("yml when json and yaml absent", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "soroprobe.yml"), []byte(`rpc_url: "https://yml.example.com"`), 0o600))
+
+		cfg, err := config.Load("")
+		require.NoError(t, err)
+		assert.Equal(t, "https://yml.example.com", cfg.RPCURL)
+	})
+}
+
+func TestLoadRejectsUnknownKeys(t *testing.T) {
+	t.Run("unknown key in json", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.json", `{"rpc_url":"https://rpc.example.com","unknown_key":"val"}`)
+		_, err := config.Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown field")
+	})
+
+	t.Run("unknown key in yaml", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.yaml", "rpc_url: \"https://rpc.example.com\"\nunknown_key: val\n")
+		_, err := config.Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+
+	t.Run("unknown key in yml", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.yml", "rpc_url: \"https://rpc.example.com\"\nunknown_key: val\n")
+		_, err := config.Load(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not found")
+	})
+}
+
+func TestProfilePrecedenceAndResolution(t *testing.T) {
+	configContent := `{
+		"rpc_url": "https://top.example.com",
+		"network_passphrase": "Top Network",
+		"http_addr": ":8081",
+		"log_level": "info",
+		"timeout": "10s",
+		"warn_ledgers": 100,
+		"critical_ledgers": 10,
+		"profiles": {
+			"mainnet": {
+				"rpc_url": "https://mainnet.example.com",
+				"network_passphrase": "Public Global Stellar Network ; September 2015",
+				"warn_ledgers": 200,
+				"critical_ledgers": 20
+			},
+			"testnet": {
+				"rpc_url": "https://testnet.example.com"
+			}
+		}
+	}`
+
+	t.Run("profile overrides top-level file keys and defaults", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.json", configContent)
+		cfg, err := config.LoadWithProfile(path, "mainnet")
+		require.NoError(t, err)
+
+		// Profile overrides
+		assert.Equal(t, "https://mainnet.example.com", cfg.RPCURL)
+		assert.Equal(t, "Public Global Stellar Network ; September 2015", cfg.NetworkPassphrase)
+		assert.EqualValues(t, 200, cfg.WarnLedgers)
+		assert.EqualValues(t, 20, cfg.CriticalLedgers)
+
+		// Top-level file keys inherited when not overridden by profile
+		assert.Equal(t, ":8081", cfg.HTTPAddr)
+		assert.Equal(t, "info", cfg.LogLevel)
+		assert.Equal(t, 10*time.Second, cfg.Timeout)
+
+		// Defaults inherited when absent from both top-level and profile
+		assert.Equal(t, config.DefaultSourceAccount, cfg.SourceAccount)
+	})
+
+	t.Run("env overrides profile", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.json", configContent)
+		t.Setenv(config.EnvRPCURL, "https://env.example.com")
+		t.Setenv(config.EnvWarnLedgers, "300")
+
+		cfg, err := config.LoadWithProfile(path, "mainnet")
+		require.NoError(t, err)
+
+		// Environment wins over profile
+		assert.Equal(t, "https://env.example.com", cfg.RPCURL)
+		assert.EqualValues(t, 300, cfg.WarnLedgers)
+
+		// Profile keys not set in env remain
+		assert.Equal(t, "Public Global Stellar Network ; September 2015", cfg.NetworkPassphrase)
+		assert.EqualValues(t, 20, cfg.CriticalLedgers)
+	})
+
+	t.Run("profile selected via SOROPROBE_PROFILE", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.json", configContent)
+		t.Setenv(config.EnvProfile, "mainnet")
+
+		cfg, err := config.Load(path)
+		require.NoError(t, err)
+		assert.Equal(t, "https://mainnet.example.com", cfg.RPCURL)
+		assert.Equal(t, "Public Global Stellar Network ; September 2015", cfg.NetworkPassphrase)
+	})
+
+	t.Run("YAML profile support", func(t *testing.T) {
+		yamlContent := `
+rpc_url: https://top-yaml.example.com
+warn_ledgers: 100
+critical_ledgers: 10
+profiles:
+  custom:
+    rpc_url: https://custom-yaml.example.com
+    warn_ledgers: 500
+`
+		path := writeConfigFile(t, "soroprobe.yaml", yamlContent)
+		cfg, err := config.LoadWithProfile(path, "custom")
+		require.NoError(t, err)
+		assert.Equal(t, "https://custom-yaml.example.com", cfg.RPCURL)
+		assert.EqualValues(t, 500, cfg.WarnLedgers)
+		assert.EqualValues(t, 10, cfg.CriticalLedgers)
+	})
+
+	t.Run("unknown profile lists defined profiles", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.json", configContent)
+		_, err := config.LoadWithProfile(path, "unknown")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown profile "unknown"`)
+		assert.Contains(t, err.Error(), "mainnet, testnet")
+	})
+
+	t.Run("unknown profile when no profiles defined", func(t *testing.T) {
+		path := writeConfigFile(t, "soroprobe.json", `{"rpc_url":"https://example.com"}`)
+		_, err := config.LoadWithProfile(path, "missing")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `unknown profile "missing"`)
+		assert.Contains(t, err.Error(), "no profiles defined")
+	})
 }
 
 func TestLogFileCannotSetTheAPIToken(t *testing.T) {

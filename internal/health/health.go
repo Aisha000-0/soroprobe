@@ -107,7 +107,7 @@ func (d Durability) OnExpiry() string {
 	if d.Archivable() {
 		return "archived and restorable"
 	}
-	return "deleted permanently and not restorable"
+	return "deleted permanently and not restorable (gone permanently)"
 }
 
 // Thresholds define how much remaining TTL triggers a warning or a critical

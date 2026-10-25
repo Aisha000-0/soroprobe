@@ -42,6 +42,12 @@ const (
 	// ExtendFootprintTTL is the subject name of a transaction that extends
 	// the TTL of a ledger entry rather than invoking a contract function.
 	ExtendFootprintTTL = "extend_footprint_ttl"
+	// PersistentDataKey is the SAC balance entry recorded in
+	// ledger_entries_data_durability.json, stored with persistent durability.
+	PersistentDataKey = `vec:["sym:Balance","addr:CBXZBQ6NW3TGPGLTR4JCG2VPVWFLCCHKDW75NJIXYXV7CJLNUO64VTFC"]`
+	// TemporaryDataKey is the SAC allowance entry recorded in the same
+	// fixture, stored with temporary durability.
+	TemporaryDataKey = `vec:["sym:Allowance","map:[[\"sym:from\",\"addr:GB32JP5GNOQLW4NUMV6H2UBOSMB4DROL7YNDBWAHYXMVFLLJOH3LXKHK\"],[\"sym:spender\",\"addr:CA6P26K4QNNIMTYP22ILTSCXQQDEKNWJIZJPC34YEZYOLBNT7YUPX7XS\"]]"]`
 )
 
 // Load decodes a fixture file into v.
@@ -139,6 +145,7 @@ func NewFake(t testing.TB) *Fake {
 		"ledger_entries_sac_instance.json",
 		"ledger_entries_wasm_instance.json",
 		"ledger_entries_wasm_code.json",
+		"ledger_entries_data_durability.json",
 	} {
 		resp := LoadLedgerEntries(t, name)
 		for _, entry := range resp.Entries {
