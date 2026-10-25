@@ -1,4 +1,4 @@
-# Contributing to SoroProbe
+#Contributing to SoroProbe
 
 Thanks for your interest. SoroProbe is built to be extended: the core is small
 and the two things people most often want to add — a new ScVal type and a new
@@ -22,6 +22,7 @@ Useful targets:
 | --- | --- |
 | `make test` | Run the suite |
 | `make test-race` | Run the suite under the race detector |
+| `make lint` | Run golangci-lint (pinned to the version CI uses) |
 | `make cover` | Report total coverage |
 | `make fixtures` | Re-record test fixtures from the live testnet |
 | `make help` | List everything |
@@ -101,6 +102,30 @@ Nothing outside `internal/scval` needs to change.
    you if you forget.
 4. If it needs fixture data, add it to the recorder and run `make fixtures`.
 
+### Adding or recording a fixture
+
+When adding a feature or test case that needs new RPC responses (for example, a
+contract invocation requiring arguments or auth, or a contract with specific data
+keys), record an individual fixture without modifying the default set:
+
+```bash
+# Record a simulated contract function call with arguments:
+go run ./internal/stellar/stellartest/record \
+  --contract <contract-id> \
+  --fn <function-name> \
+  --arg u32:5 \
+  --out internal/stellar/stellartest/testdata/simulate_my_call.json
+
+# Record ledger entries (instance and data keys):
+go run ./internal/stellar/stellartest/record \
+  --contract <contract-id> \
+  --key sym:Admin \
+  --out internal/stellar/stellartest/testdata/ledger_entries_my_contract.json
+```
+
+Arguments and data keys reuse SoroProbe's standard `type:value` argument syntax.
+Fixtures are pretty-printed and stable so diffs remain clean.
+
 ### Changing health thresholds or statuses
 
 `internal/health` is self-contained and has no dependency on RPC types, which
@@ -121,7 +146,7 @@ version and the date verified. If field names moved, the compile will tell you.
 
 ## Style
 
-- Idiomatic Go. `make fmt` and `make vet` must be clean.
+- Idiomatic Go. `make fmt`, `make vet` and `make lint` must be clean.
 - Small, focused packages with a clear job.
 - Comments explain **why**, not what. If a decision looks arbitrary, say what
   the alternative was and why it lost.

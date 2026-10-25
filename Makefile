@@ -4,6 +4,11 @@ VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 
 LDFLAGS     := -X main.version=$(VERSION)
 GO          ?= go
 
+# Pinned so `make lint` runs exactly the version CI runs. Override
+# GOLANGCI_LINT to use an already-installed binary instead.
+GOLANGCI_LINT_VERSION ?= v2.13.2
+GOLANGCI_LINT         ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
 # The Stellar SDK requires Go 1.25. GOTOOLCHAIN=auto lets an older local `go`
 # fetch the right toolchain automatically rather than failing to build.
 export GOTOOLCHAIN ?= auto
@@ -40,6 +45,10 @@ fmt: ## Format all Go source
 vet: ## Run go vet
 	$(GO) vet ./...
 
+.PHONY: lint
+lint: ## Run golangci-lint (pinned to the version CI uses)
+	$(GOLANGCI_LINT) run --timeout=5m ./...
+
 .PHONY: tidy
 tidy: ## Tidy go.mod and go.sum
 	$(GO) mod tidy
@@ -49,7 +58,7 @@ check: fmt vet test ## Format, vet and test — run before opening a PR
 
 .PHONY: fixtures
 fixtures: ## Re-record test fixtures from the live testnet
-	$(GO) run ./internal/stellar/stellartest/record
+	$(GO) run ./internal/stellar/stellartest/record $(FIXTURE_FLAGS)
 
 .PHONY: run
 run: ## Run the HTTP API locally

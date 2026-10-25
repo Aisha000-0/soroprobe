@@ -1,0 +1,33 @@
+# The HTTP API, built from this checkout. SoroProbe is stateless and
+# read-only — no database, no volumes, no secret keys — so one service is the
+# whole file:
+#
+#   docker compose up
+#
+# RPC_URL, NETWORK_PASSPHRASE and SOROVAULT_URL pass through from the
+# environment (or a .env file next to this one). Every default targets the
+# public testnet, so the stack comes up with no configuration at all; point
+# RPC_URL and NETWORK_PASSPHRASE elsewhere to follow another network, and set
+# SOROVAULT_URL to type simulate arguments from a SoroVault registry.
+services:
+  api:
+    build: .
+    command: ["serve"]
+    environment:
+      RPC_URL: ${RPC_URL:-https://soroban-testnet.stellar.org}
+      NETWORK_PASSPHRASE: ${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}
+      SOROVAULT_URL: ${SOROVAULT_URL:-}
+      # The image sets this too; it is repeated here so the file spells out
+      # that the container must listen on every interface for the port
+      # publish below to reach it.
+      HTTP_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # Liveness only: /healthz never calls the RPC endpoint, so a container
+      # is not killed just because its upstream blipped. Use GET /readyz to
+      # watch the RPC endpoint itself.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

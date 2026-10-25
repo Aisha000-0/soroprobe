@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -24,11 +26,69 @@ func (s *Server) handleLiveness(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleReadiness reports whether this instance can answer queries: unlike
+// /healthz, it calls the configured RPC endpoint, which must report healthy
+// and serve the configured network. An orchestrator uses it to take an
+// instance out of rotation while its upstream is down — the reason for the
+// split is that a liveness probe must not restart the process for an RPC
+// blip.
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	// The answer describes live upstream state, so neither an intermediary
+	// nor a browser may serve a stale copy. (The few-second reuse lives in
+	// the server, below, and is what keeps probes off the RPC endpoint.)
+	w.Header().Set("Cache-Control", "no-store")
+
+	if err, ok := s.cachedReadiness(); ok {
+		s.writeReadiness(w, err)
+		return
+	}
+
+	err := s.prober.Ready(r.Context(), s.networkPassphrase)
+
+	s.readyMu.Lock()
+	s.readyErr, s.readyAt, s.readySet = err, time.Now(), true
+	s.readyMu.Unlock()
+
+	s.writeReadiness(w, err)
+}
+
+// cachedReadiness returns the last readiness result while it is fresh, so
+// frequent probes do not multiply RPC traffic. Failures are cached too: an
+// orchestrator probing every second must not turn an RPC outage into an
+// outage of its own.
+func (s *Server) cachedReadiness() (error, bool) {
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if !s.readySet || time.Since(s.readyAt) >= s.readinessTTL {
+		return nil, false
+	}
+	return s.readyErr, true
+}
+
+// writeReadiness renders a readiness result: 200 when the RPC endpoint is
+// ready, 503 with the probe's own reason otherwise.
+func (s *Server) writeReadiness(w http.ResponseWriter, err error) {
+	if err == nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		return
+	}
+	writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+		"status": "unready",
+		"reason": err.Error(),
+	})
+}
+
 // simulateBody is the POST /v1/simulate payload.
 type simulateBody struct {
 	ContractID string   `json:"contract_id"`
 	Function   string   `json:"function"`
 	Args       []string `json:"args"`
+	// Baseline is a saved simulation report to compare the cost against.
+	// It has the shape a --json report has.
+	Baseline *probe.Baseline `json:"baseline,omitempty"`
+	// MaxIncreasePercent is the largest tolerated percentage increase in any
+	// cost figure. It only has an effect alongside a baseline.
+	MaxIncreasePercent *float64 `json:"max_increase_percent,omitempty"`
 }
 
 // maxAPIBatchChecks is lower than probe.MaxBatchChecks because the whole
@@ -78,9 +138,11 @@ func (s *Server) handleSimulate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.prober.Simulate(r.Context(), probe.SimulateRequest{
-		ContractID: body.ContractID,
-		Function:   body.Function,
-		Args:       body.Args,
+		ContractID:         body.ContractID,
+		Function:           body.Function,
+		Args:               body.Args,
+		Baseline:           body.Baseline,
+		MaxIncreasePercent: body.MaxIncreasePercent,
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
@@ -99,16 +161,37 @@ func (s *Server) handleInspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	estimateExtend, err := estimateExtendParam(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+
 	result, err := s.prober.Inspect(r.Context(), probe.InspectRequest{
 		ContractID:     chi.URLParam(r, "contract"),
 		DataKeys:       r.URL.Query()["key"],
 		DataDurability: durability,
+		EstimateExtend: estimateExtend,
 	})
 	if err != nil {
 		writeError(w, statusForError(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// estimateExtendParam reads the number of ledgers to price an extension for.
+// Zero means no estimate was asked for.
+func estimateExtendParam(r *http.Request) (uint32, error) {
+	raw := r.URL.Query().Get("estimate_extend")
+	if raw == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("estimate_extend must be a number of ledgers, got %q", raw)
+	}
+	return uint32(value), nil
 }
 
 func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +206,7 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		ContractID:     chi.URLParam(r, "contract"),
 		Function:       query.Get("fn"),
 		Args:           query["arg"],
+		Expect:         query.Get("expect"),
 		DataKeys:       query["key"],
 		DataDurability: durability,
 	})
@@ -155,7 +239,8 @@ func statusForError(err error) int {
 	switch {
 	case errors.Is(err, abi.ErrNoSuchFunction),
 		errors.Is(err, probe.ErrInvalidBatch),
-		errors.Is(err, abi.ErrArgumentCount):
+		errors.Is(err, abi.ErrArgumentCount),
+		errors.Is(err, probe.ErrBaselineMismatch):
 		return http.StatusBadRequest
 	case strings.Contains(msg, "invalid contract id"),
 		strings.Contains(msg, "argument "),

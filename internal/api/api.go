@@ -7,10 +7,13 @@ package api
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -26,6 +29,20 @@ type Server struct {
 	addr   string
 	log    *slog.Logger
 	router chi.Router
+
+	// networkPassphrase is the network /readyz expects the RPC endpoint to
+	// serve.
+	networkPassphrase string
+	// readinessTTL bounds how long a /readyz result is reused before the
+	// RPC endpoint is probed again.
+	readinessTTL time.Duration
+	// ready* cache the last readiness result, so a chatty orchestrator does
+	// not multiply RPC traffic. A mutex guards the pair; it is never held
+	// across an RPC call.
+	readyMu  sync.Mutex
+	readyAt  time.Time
+	readyErr error
+	readySet bool
 }
 
 // Options configures a Server.
@@ -37,8 +54,23 @@ type Options struct {
 	Addr string
 	// Logger receives request logs. Defaults to a discarding logger.
 	Logger *slog.Logger
+	// CORSOrigins is the exact-origin allow-list. Empty disables CORS.
+	CORSOrigins []string
+	// APIToken, when non-empty, requires "Authorization: Bearer <token>" on
+	// every /v1 route. /healthz stays open, so a liveness probe needs no
+	// credential. Empty keeps the API unauthenticated, exactly as before.
+	// The token must meet config.MinAPITokenLength; Config.Validate enforces
+	// that at startup.
+	APIToken string
 	// Timeout bounds a single request. Defaults to 60s.
 	Timeout time.Duration
+	// NetworkPassphrase is the network /readyz expects the RPC endpoint to
+	// serve; a healthy endpoint on another network is reported unready.
+	// Defaults to the testnet passphrase, matching the CLI's defaults.
+	NetworkPassphrase string
+	// ReadinessCacheTTL bounds how long a /readyz result is reused before
+	// the RPC endpoint is probed again. Defaults to 5s.
+	ReadinessCacheTTL time.Duration
 }
 
 // New builds a Server with its routes mounted.
@@ -52,8 +84,20 @@ func New(opts Options) *Server {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 60 * time.Second
 	}
+	if opts.NetworkPassphrase == "" {
+		opts.NetworkPassphrase = config.DefaultNetworkPassphrase
+	}
+	if opts.ReadinessCacheTTL <= 0 {
+		opts.ReadinessCacheTTL = 5 * time.Second
+	}
 
-	s := &Server{prober: opts.Prober, addr: opts.Addr, log: opts.Logger}
+	s := &Server{
+		prober:            opts.Prober,
+		addr:              opts.Addr,
+		log:               opts.Logger,
+		networkPassphrase: opts.NetworkPassphrase,
+		readinessTTL:      opts.ReadinessCacheTTL,
+	}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
@@ -61,9 +105,19 @@ func New(opts Options) *Server {
 	r.Use(middleware.Timeout(opts.Timeout))
 	r.Use(nosniff)
 	r.Use(s.logRequests)
+	if len(opts.CORSOrigins) > 0 {
+		r.Use(cors(opts.CORSOrigins))
+	}
 
+	// /healthz stays outside the authenticated /v1 subtree on purpose: a
+	// liveness probe should not need a credential to prove the process is up.
 	r.Get("/healthz", s.handleLiveness)
+	r.Get("/openapi.json", s.handleOpenAPI)
+	r.Get("/readyz", s.handleReadiness)
 	r.Route("/v1", func(r chi.Router) {
+		if opts.APIToken != "" {
+			r.Use(requireToken(opts.APIToken))
+		}
 		// Answers reflect live on-chain state, so they must not be replayed
 		// from a shared or intermediary cache.
 		r.Use(noStore)
@@ -77,23 +131,59 @@ func New(opts Options) *Server {
 	return s
 }
 
+func cors(origins []string) func(http.Handler) http.Handler {
+	allowed := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		allowed[origin] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			origin := r.Header.Get("Origin")
+			_, ok := allowed[origin]
+			w.Header().Add("Vary", "Origin")
+			if ok {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+			if r.Method == http.MethodOptions && r.Header.Get("Access-Control-Request-Method") != "" {
+				if !ok {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // Handler exposes the router, which makes the API testable with httptest
 // without binding a port.
 func (s *Server) Handler() http.Handler { return s.router }
 
-// ListenAndServe runs the server until ctx is cancelled, then shuts it down
+// ListenAndServe runs the server until ctx is canceled, then shuts it down
 // gracefully.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, listener)
+}
+
+// Serve runs the server on listener until ctx is canceled, then shuts it down gracefully.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	srv := &http.Server{
-		Addr:              s.addr,
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		s.log.Info("http api listening", "addr", s.addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.log.Info("http api listening", "addr", listener.Addr())
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
 		}
@@ -102,13 +192,26 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	select {
 	case err := <-errCh:
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		s.log.Info("shutting down http api")
-		return srv.Shutdown(shutdownCtx)
+		err := srv.Shutdown(shutdownCtx)
+		_ = listener.Close()
+		return err
 	}
+}
+
+//go:embed openapi.json
+var openAPISpec []byte
+
+func (s *Server) handleOpenAPI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_, _ = w.Write(openAPISpec)
 }
 
 // nosniff stops a browser from reinterpreting a response as a type it did not

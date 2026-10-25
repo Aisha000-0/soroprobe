@@ -155,7 +155,7 @@ func TestBuildInvocationTx(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	fn, err := stellartest.FunctionOf(envelope)
+	fn, err := stellartest.SubjectOf(envelope)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", fn)
 
@@ -163,6 +163,59 @@ func TestBuildInvocationTx(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, args, 1)
 	assert.Equal(t, "world", string(*args[0].Sym))
+}
+
+func TestBuildExtendFootprintTx(t *testing.T) {
+	t.Parallel()
+
+	addr, err := stellar.ParseContractID(testContract)
+	require.NoError(t, err)
+
+	key := stellar.InstanceKey(addr)
+	envelope, err := stellar.BuildExtendFootprintTx(stellar.ExtendParams{
+		SourceAccount: testAccount,
+		Key:           key,
+		ExtendTo:      4_014_125 + 1_000_000,
+	})
+	require.NoError(t, err)
+
+	subject, err := stellartest.SubjectOf(envelope)
+	require.NoError(t, err)
+	assert.Equal(t, stellartest.ExtendFootprintTTL, subject)
+
+	var env xdr.TransactionEnvelope
+	require.NoError(t, xdr.SafeUnmarshalBase64(envelope, &env))
+
+	// SoroProbe never signs anything, here either.
+	assert.Empty(t, env.Signatures())
+
+	ops := env.Operations()
+	require.Len(t, ops, 1)
+	extend, ok := ops[0].Body.GetExtendFootprintTtlOp()
+	require.True(t, ok)
+	assert.EqualValues(t, 4_014_125+1_000_000, extend.ExtendTo)
+
+	// The footprint must hold the entry being estimated and nothing else,
+	// so the fee is the fee for that entry.
+	require.NotNil(t, env.V1)
+	require.NotNil(t, env.V1.Tx.Ext.SorobanData)
+	footprint := env.V1.Tx.Ext.SorobanData.Resources.Footprint
+	require.Len(t, footprint.ReadOnly, 1)
+	assert.Equal(t, key, footprint.ReadOnly[0])
+	assert.Empty(t, footprint.ReadWrite)
+}
+
+func TestBuildExtendFootprintTxNeedsASourceAccount(t *testing.T) {
+	t.Parallel()
+
+	addr, err := stellar.ParseContractID(testContract)
+	require.NoError(t, err)
+
+	_, err = stellar.BuildExtendFootprintTx(stellar.ExtendParams{
+		Key: stellar.InstanceKey(addr),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "source account")
 }
 
 func TestBuildInvocationTxIsUnsigned(t *testing.T) {

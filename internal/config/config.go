@@ -7,17 +7,23 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/soroworks/soroprobe/internal/health"
 	"github.com/stellar/go-stellar-sdk/network"
 	"github.com/stellar/go-stellar-sdk/strkey"
+	"go.yaml.in/yaml/v3"
 )
 
 // Defaults. These target the public testnet so that a fresh checkout can run
@@ -32,7 +38,16 @@ const (
 	// loopback inside a container would reach nothing.
 	DefaultHTTPAddr = "127.0.0.1:8080"
 	DefaultLogLevel = "info"
-	DefaultTimeout  = 30 * time.Second
+	// DefaultLogFormat keeps logs human-readable; json is the opt-in for CI
+	// and log aggregators, which filter on fields rather than regex.
+	DefaultLogFormat = "text"
+	DefaultTimeout   = 30 * time.Second
+
+	// MinAPITokenLength is the shortest API token the HTTP API will accept.
+	// An authenticated caller can spend the operator's RPC quota on demand, so
+	// a token short enough to guess is not meaningfully different from no token
+	// at all. The limit is a floor, not advice: use a long random value.
+	MinAPITokenLength = 16
 
 	// DefaultSourceAccount is the all-zero ed25519 account ID. Simulation reads
 	// the source account but never needs it to exist, be funded, or sign
@@ -44,20 +59,34 @@ const (
 	DefaultWarnLedgers = 120_960
 	// DefaultCriticalLedgers is ~1 day at 5s per ledger.
 	DefaultCriticalLedgers = 17_280
+	// DefaultBaseFee is the network minimum base fee in stroops.
+	DefaultBaseFee = int64(100)
 )
 
 // Environment variable names.
 const (
-	EnvRPCURL            = "RPC_URL"
-	EnvNetworkPassphrase = "NETWORK_PASSPHRASE"
-	EnvSourceAccount     = "SOURCE_ACCOUNT"
-	EnvHTTPAddr          = "HTTP_ADDR"
-	EnvLogLevel          = "LOG_LEVEL"
-	EnvTimeout           = "RPC_TIMEOUT"
-	EnvWarnLedgers       = "WARN_LEDGERS"
-	EnvCriticalLedgers   = "CRITICAL_LEDGERS"
-	EnvConfigFile        = "SOROPROBE_CONFIG"
-	EnvSoroVaultURL      = "SOROVAULT_URL"
+	EnvRPCURL                  = "RPC_URL"
+	EnvNetworkPassphrase       = "NETWORK_PASSPHRASE"
+	EnvSourceAccount           = "SOURCE_ACCOUNT"
+	EnvHTTPAddr                = "HTTP_ADDR"
+	EnvCORSOrigins             = "CORS_ORIGINS"
+	EnvLogLevel                = "LOG_LEVEL"
+	EnvLogFormat               = "LOG_FORMAT"
+	EnvTimeout                 = "RPC_TIMEOUT"
+	EnvWarnLedgers             = "WARN_LEDGERS"
+	EnvCriticalLedgers         = "CRITICAL_LEDGERS"
+	EnvConfigFile              = "SOROPROBE_CONFIG"
+	EnvSoroVaultURL            = "SOROVAULT_URL"
+	EnvBaseFee                 = "BASE_FEE"
+	EnvInspectCacheTTL         = "INSPECT_CACHE_TTL"
+	EnvAPIToken                = "API_TOKEN"
+	EnvInstanceWarnLedgers     = "INSTANCE_WARN_LEDGERS"
+	EnvInstanceCriticalLedgers = "INSTANCE_CRITICAL_LEDGERS"
+	EnvCodeWarnLedgers         = "CODE_WARN_LEDGERS"
+	EnvCodeCriticalLedgers     = "CODE_CRITICAL_LEDGERS"
+	EnvDataWarnLedgers         = "DATA_WARN_LEDGERS"
+	EnvDataCriticalLedgers     = "DATA_CRITICAL_LEDGERS"
+	EnvProfile                 = "SOROPROBE_PROFILE"
 )
 
 // Config holds every setting SoroProbe needs.
@@ -71,8 +100,13 @@ type Config struct {
 	SourceAccount string `json:"source_account"`
 	// HTTPAddr is the listen address for the HTTP API.
 	HTTPAddr string `json:"http_addr"`
+	// CORSOrigins is the exact-origin allow-list for the HTTP API.
+	CORSOrigins []string `json:"-"`
 	// LogLevel is one of debug, info, warn, error.
 	LogLevel string `json:"log_level"`
+	// LogFormat selects the log handler: "text" for humans, "json" for log
+	// aggregators that filter on fields instead of regex-parsing lines.
+	LogFormat string `json:"log_format"`
 	// Timeout bounds a single RPC request.
 	Timeout time.Duration `json:"timeout"`
 	// WarnLedgers is the remaining-TTL threshold, in ledgers, below which an
@@ -81,9 +115,25 @@ type Config struct {
 	// CriticalLedgers is the remaining-TTL threshold, in ledgers, below which
 	// an entry is reported as critical.
 	CriticalLedgers uint32 `json:"critical_ledgers"`
+	// ThresholdOverrides optionally adjusts TTL thresholds by entry kind.
+	ThresholdOverrides health.ThresholdOverrides `json:"thresholds,omitempty"`
 	// SoroVaultURL, when set, is a SoroVault registry whose recorded contract
 	// interfaces type simulate arguments. Empty disables the lookup.
 	SoroVaultURL string `json:"sorovault_url"`
+	// InspectCacheTTL is how long `serve` may reuse an inspect result for the
+	// same contract and key set. Zero, the default, disables the cache; a few
+	// seconds suits dashboards, because TTLs change at most once per ledger.
+	InspectCacheTTL time.Duration `json:"inspect_cache_ttl"`
+
+	// APIToken, when set, requires "Authorization: Bearer <token>" on the
+	// HTTP API's /v1 routes; /healthz stays open so a probe needs no
+	// credential. Empty keeps the API unauthenticated. It is a secret, so it
+	// is deliberately absent from the config file and the environment is the
+	// place to set it (or the --api-token flag).
+	APIToken string `json:"-"`
+
+	// BaseFee is the base inclusion fee per operation in stroops.
+	BaseFee int64 `json:"base_fee"`
 }
 
 // Default returns a Config populated entirely from the package defaults.
@@ -94,34 +144,63 @@ func Default() Config {
 		SourceAccount:     DefaultSourceAccount,
 		HTTPAddr:          DefaultHTTPAddr,
 		LogLevel:          DefaultLogLevel,
+		LogFormat:         DefaultLogFormat,
 		Timeout:           DefaultTimeout,
 		WarnLedgers:       DefaultWarnLedgers,
 		CriticalLedgers:   DefaultCriticalLedgers,
+		BaseFee:           DefaultBaseFee,
 	}
 }
 
 // fileConfig mirrors Config but with pointers, so that "absent" is
-// distinguishable from "set to the zero value".
+// distinguishable from "set to the zero value". It can also contain named profiles.
 type fileConfig struct {
-	RPCURL            *string `json:"rpc_url"`
-	NetworkPassphrase *string `json:"network_passphrase"`
-	SourceAccount     *string `json:"source_account"`
-	HTTPAddr          *string `json:"http_addr"`
-	LogLevel          *string `json:"log_level"`
-	Timeout           *string `json:"timeout"`
-	WarnLedgers       *uint32 `json:"warn_ledgers"`
-	CriticalLedgers   *uint32 `json:"critical_ledgers"`
-	SoroVaultURL      *string `json:"sorovault_url"`
+	RPCURL             *string                    `json:"rpc_url" yaml:"rpc_url"`
+	NetworkPassphrase  *string                    `json:"network_passphrase" yaml:"network_passphrase"`
+	SourceAccount      *string                    `json:"source_account" yaml:"source_account"`
+	HTTPAddr           *string                    `json:"http_addr" yaml:"http_addr"`
+	LogLevel           *string                    `json:"log_level" yaml:"log_level"`
+	LogFormat          *string                    `json:"log_format" yaml:"log_format"`
+	Timeout            *string                    `json:"timeout" yaml:"timeout"`
+	WarnLedgers        *uint32                    `json:"warn_ledgers" yaml:"warn_ledgers"`
+	CriticalLedgers    *uint32                    `json:"critical_ledgers" yaml:"critical_ledgers"`
+	ThresholdOverrides *health.ThresholdOverrides `json:"thresholds" yaml:"thresholds"`
+	SoroVaultURL       *string                    `json:"sorovault_url" yaml:"sorovault_url"`
+	BaseFee            *int64                     `json:"base_fee" yaml:"base_fee"`
+	InspectCacheTTL    *string                    `json:"inspect_cache_ttl" yaml:"inspect_cache_ttl"`
+	Profiles           map[string]*fileConfig     `json:"profiles" yaml:"profiles"`
+	// APIToken is accepted so that a file carrying the key still loads, and
+	// is never applied: the token is a secret and comes from API_TOKEN only.
+	APIToken *string `json:"api_token" yaml:"api_token"`
+}
+
+// defaultCandidateFiles lists config filenames checked in order when no path is specified.
+var defaultCandidateFiles = []string{
+	"soroprobe.json",
+	"soroprobe.yaml",
+	"soroprobe.yml",
 }
 
 // Load builds a Config from defaults, then the config file at path (if
-// non-empty, or if SOROPROBE_CONFIG names one), then the environment.
+// non-empty, or if SOROPROBE_CONFIG names one), then the selected profile (if any),
+// then the environment.
 //
 // A path given explicitly must exist; a path discovered via SOROPROBE_CONFIG
-// must also exist. Only the implicit lookup of ./soroprobe.json is allowed to
-// come up empty.
+// must also exist. Only the implicit lookup of ./soroprobe.json, ./soroprobe.yaml,
+// or ./soroprobe.yml is allowed to come up empty.
 func Load(path string) (Config, error) {
+	return LoadWithProfile(path, "")
+}
+
+// LoadWithProfile builds a Config from defaults, then the config file at path,
+// then the profile named by profileName (or SOROPROBE_PROFILE if empty),
+// then the environment.
+func LoadWithProfile(path string, profileName string) (Config, error) {
 	cfg := Default()
+
+	if profileName == "" {
+		profileName = os.Getenv(EnvProfile)
+	}
 
 	explicit := path != ""
 	if !explicit {
@@ -129,10 +208,25 @@ func Load(path string) (Config, error) {
 		explicit = path != ""
 	}
 	if !explicit {
-		path = "soroprobe.json"
+		for _, candidate := range defaultCandidateFiles {
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			}
+		}
+		if path == "" {
+			// None found; if a profile was requested, report an error.
+			if profileName != "" {
+				return cfg, fmt.Errorf("profile %q requested but no config file found", profileName)
+			}
+			if err := applyEnv(&cfg); err != nil {
+				return cfg, err
+			}
+			return cfg, nil
+		}
 	}
 
-	if err := applyFile(&cfg, path, explicit); err != nil {
+	if err := applyFileWithProfile(&cfg, path, explicit, profileName); err != nil {
 		return cfg, err
 	}
 	if err := applyEnv(&cfg); err != nil {
@@ -141,31 +235,44 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-func applyFile(cfg *Config, path string, required bool) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && !required {
-			return nil
+func unmarshalConfigFile(path string, raw []byte, fc *fileConfig) error {
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".yaml" || ext == ".yml" {
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
+		dec.KnownFields(true)
+		if err := dec.Decode(fc); err != nil && !errors.Is(err, io.EOF) {
+			return err
 		}
-		return fmt.Errorf("read config file %s: %w", path, err)
+		return nil
 	}
 
-	var fc fileConfig
-	if err := json.Unmarshal(raw, &fc); err != nil {
-		return fmt.Errorf("parse config file %s: %w", path, err)
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(fc); err != nil && !errors.Is(err, io.EOF) {
+		return err
 	}
+	return nil
+}
 
+func applyValues(cfg *Config, path string, fc *fileConfig) error {
 	setString(&cfg.RPCURL, fc.RPCURL)
 	setString(&cfg.NetworkPassphrase, fc.NetworkPassphrase)
 	setString(&cfg.SourceAccount, fc.SourceAccount)
 	setString(&cfg.HTTPAddr, fc.HTTPAddr)
 	setString(&cfg.LogLevel, fc.LogLevel)
+	setString(&cfg.LogFormat, fc.LogFormat)
 	setString(&cfg.SoroVaultURL, fc.SoroVaultURL)
 	if fc.WarnLedgers != nil {
 		cfg.WarnLedgers = *fc.WarnLedgers
 	}
 	if fc.CriticalLedgers != nil {
 		cfg.CriticalLedgers = *fc.CriticalLedgers
+	}
+	if fc.ThresholdOverrides != nil {
+		cfg.ThresholdOverrides = *fc.ThresholdOverrides
+	}
+	if fc.BaseFee != nil {
+		cfg.BaseFee = *fc.BaseFee
 	}
 	if fc.Timeout != nil {
 		d, err := time.ParseDuration(*fc.Timeout)
@@ -174,6 +281,57 @@ func applyFile(cfg *Config, path string, required bool) error {
 		}
 		cfg.Timeout = d
 	}
+	if fc.InspectCacheTTL != nil {
+		d, err := time.ParseDuration(*fc.InspectCacheTTL)
+		if err != nil {
+			return fmt.Errorf("parse config file %s: inspect_cache_ttl: %w", path, err)
+		}
+		cfg.InspectCacheTTL = d
+	}
+	return nil
+}
+
+func applyFileWithProfile(cfg *Config, path string, required bool, profileName string) error {
+	raw, err := os.ReadFile(path) //nolint:gosec // the config path comes from --config or SOROPROBE_CONFIG; reading it is the feature.
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && !required {
+			if profileName != "" {
+				return fmt.Errorf("profile %q requested but config file %s not found: %w", profileName, path, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("read config file %s: %w", path, err)
+	}
+
+	var fc fileConfig
+	if err := unmarshalConfigFile(path, raw, &fc); err != nil {
+		return fmt.Errorf("parse config file %s: %w", path, err)
+	}
+
+	// 1. Apply top-level file keys
+	if err := applyValues(cfg, path, &fc); err != nil {
+		return err
+	}
+
+	// 2. Apply profile if specified
+	if profileName != "" {
+		pfc, ok := fc.Profiles[profileName]
+		if !ok || pfc == nil {
+			names := make([]string, 0, len(fc.Profiles))
+			for name := range fc.Profiles {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			if len(names) == 0 {
+				return fmt.Errorf("unknown profile %q (no profiles defined in %s)", profileName, path)
+			}
+			return fmt.Errorf("unknown profile %q in %s (defined profiles: %s)", profileName, path, strings.Join(names, ", "))
+		}
+		if err := applyValues(cfg, path, pfc); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -182,8 +340,18 @@ func applyEnv(cfg *Config) error {
 	setString(&cfg.NetworkPassphrase, lookup(EnvNetworkPassphrase))
 	setString(&cfg.SourceAccount, lookup(EnvSourceAccount))
 	setString(&cfg.HTTPAddr, lookup(EnvHTTPAddr))
+	if origins := lookup(EnvCORSOrigins); origins != nil {
+		cfg.CORSOrigins = nil
+		for _, origin := range strings.Split(*origins, ",") {
+			if origin = strings.TrimSpace(origin); origin != "" {
+				cfg.CORSOrigins = append(cfg.CORSOrigins, origin)
+			}
+		}
+	}
 	setString(&cfg.LogLevel, lookup(EnvLogLevel))
+	setString(&cfg.LogFormat, lookup(EnvLogFormat))
 	setString(&cfg.SoroVaultURL, lookup(EnvSoroVaultURL))
+	setString(&cfg.APIToken, lookup(EnvAPIToken))
 
 	if v := lookup(EnvTimeout); v != nil {
 		d, err := time.ParseDuration(*v)
@@ -192,10 +360,88 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Timeout = d
 	}
+	if v := lookup(EnvInspectCacheTTL); v != nil {
+		d, err := time.ParseDuration(*v)
+		if err != nil {
+			return fmt.Errorf("parse %s: %w", EnvInspectCacheTTL, err)
+		}
+		cfg.InspectCacheTTL = d
+	}
 	if err := setUint32FromEnv(&cfg.WarnLedgers, EnvWarnLedgers); err != nil {
 		return err
 	}
-	return setUint32FromEnv(&cfg.CriticalLedgers, EnvCriticalLedgers)
+	if err := setUint32FromEnv(&cfg.CriticalLedgers, EnvCriticalLedgers); err != nil {
+		return err
+	}
+	if err := setInt64FromEnv(&cfg.BaseFee, EnvBaseFee); err != nil {
+		return err
+	}
+	return applyThresholdOverrideEnv(&cfg.ThresholdOverrides)
+}
+
+func setInt64FromEnv(dst *int64, key string) error {
+	v := lookup(key)
+	if v == nil {
+		return nil
+	}
+	n, err := strconv.ParseInt(*v, 10, 64)
+	if err != nil {
+		return fmt.Errorf("parse %s: %w", key, err)
+	}
+	*dst = n
+	return nil
+}
+
+func applyThresholdOverrideEnv(overrides *health.ThresholdOverrides) error {
+	for _, item := range []struct {
+		kind     health.EntryKind
+		warn     string
+		critical string
+	}{
+		{health.EntryKindInstance, EnvInstanceWarnLedgers, EnvInstanceCriticalLedgers},
+		{health.EntryKindCode, EnvCodeWarnLedgers, EnvCodeCriticalLedgers},
+		{health.EntryKindData, EnvDataWarnLedgers, EnvDataCriticalLedgers},
+	} {
+		for _, field := range []struct {
+			key string
+			set func(*health.ThresholdOverride, *uint32)
+		}{
+			{item.warn, func(o *health.ThresholdOverride, n *uint32) { o.Warn = n }},
+			{item.critical, func(o *health.ThresholdOverride, n *uint32) { o.Critical = n }},
+		} {
+			v := lookup(field.key)
+			if v == nil {
+				continue
+			}
+			n, err := strconv.ParseUint(*v, 10, 32)
+			if err != nil {
+				return fmt.Errorf("parse %s: %w", field.key, err)
+			}
+			value := uint32(n)
+			field.set(thresholdOverride(overrides, item.kind), &value)
+		}
+	}
+	return nil
+}
+
+func thresholdOverride(overrides *health.ThresholdOverrides, kind health.EntryKind) *health.ThresholdOverride {
+	switch kind {
+	case health.EntryKindInstance:
+		if overrides.Instance == nil {
+			overrides.Instance = &health.ThresholdOverride{}
+		}
+		return overrides.Instance
+	case health.EntryKindCode:
+		if overrides.Code == nil {
+			overrides.Code = &health.ThresholdOverride{}
+		}
+		return overrides.Code
+	default:
+		if overrides.Data == nil {
+			overrides.Data = &health.ThresholdOverride{}
+		}
+		return overrides.Data
+	}
 }
 
 func setUint32FromEnv(dst *uint32, key string) error {
@@ -246,8 +492,25 @@ func (c Config) Validate() error {
 		return fmt.Errorf("critical threshold (%d) must not exceed warning threshold (%d)",
 			c.CriticalLedgers, c.WarnLedgers)
 	}
+	if c.InspectCacheTTL < 0 {
+		return fmt.Errorf("inspect cache ttl must not be negative, got %s", c.InspectCacheTTL)
+	}
+	global := health.Thresholds{Warn: c.WarnLedgers, Critical: c.CriticalLedgers}
+	for _, kind := range []health.EntryKind{health.EntryKindInstance, health.EntryKindCode, health.EntryKindData} {
+		thresholds := health.ResolveThresholds(kind, global, c.ThresholdOverrides)
+		if thresholds.Critical > thresholds.Warn {
+			return fmt.Errorf("%s critical threshold (%d) must not exceed warning threshold (%d)", kind, thresholds.Critical, thresholds.Warn)
+		}
+	}
 	if _, err := ParseLogLevel(c.LogLevel); err != nil {
 		return err
+	}
+	if _, err := ParseLogFormat(c.LogFormat); err != nil {
+		return err
+	}
+	if c.APIToken != "" && len(c.APIToken) < MinAPITokenLength {
+		return fmt.Errorf("api token is %d characters; use at least %d (e.g. \"openssl rand -hex 32\")",
+			len(c.APIToken), MinAPITokenLength)
 	}
 	if c.SoroVaultURL != "" &&
 		!strings.HasPrefix(c.SoroVaultURL, "http://") && !strings.HasPrefix(c.SoroVaultURL, "https://") {
@@ -272,11 +535,34 @@ func ParseLogLevel(name string) (slog.Level, error) {
 	}
 }
 
-// Logger builds the process logger described by this config.
-func (c Config) Logger(w *os.File) *slog.Logger {
+// ParseLogFormat maps a log format name onto its canonical form, "text" or
+// "json". The empty name means the default, text.
+func ParseLogFormat(name string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "text", "":
+		return "text", nil
+	case "json":
+		return "json", nil
+	default:
+		return "", fmt.Errorf("unknown log format %q (want text or json)", name)
+	}
+}
+
+// Logger builds the process logger described by this config. Both formats
+// write to w; json emits one parseable object per line so a CI log aggregator
+// can filter on fields such as contract or status instead of regex-parsing
+// the text handler's output.
+func (c Config) Logger(w io.Writer) *slog.Logger {
 	level, err := ParseLogLevel(c.LogLevel)
 	if err != nil {
 		level = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
+	opts := &slog.HandlerOptions{Level: level}
+	// Validate rejects an unknown format before any command runs, so here a
+	// parse failure falls back to the readable default rather than failing
+	// a logging call.
+	if format, err := ParseLogFormat(c.LogFormat); err == nil && format == "json" {
+		return slog.New(slog.NewJSONHandler(w, opts))
+	}
+	return slog.New(slog.NewTextHandler(w, opts))
 }
