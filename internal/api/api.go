@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -165,16 +166,24 @@ func (s *Server) Handler() http.Handler { return s.router }
 // ListenAndServe runs the server until ctx is canceled, then shuts it down
 // gracefully.
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	listener, err := net.Listen("tcp", s.addr)
+	if err != nil {
+		return err
+	}
+	return s.Serve(ctx, listener)
+}
+
+// Serve runs the server on listener until ctx is canceled, then shuts it down gracefully.
+func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	srv := &http.Server{
-		Addr:              s.addr,
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
-		s.log.Info("http api listening", "addr", s.addr)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		s.log.Info("http api listening", "addr", listener.Addr())
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 			return
 		}
@@ -183,12 +192,17 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	select {
 	case err := <-errCh:
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		s.log.Info("shutting down http api")
-		return srv.Shutdown(shutdownCtx)
+		err := srv.Shutdown(shutdownCtx)
+		_ = listener.Close()
+		return err
 	}
 }
 

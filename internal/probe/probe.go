@@ -138,6 +138,8 @@ type Footprint struct {
 type RestoreInfo struct {
 	// MinResourceFee is the fee for the required RestoreFootprint operation.
 	MinResourceFee int64 `json:"min_resource_fee_stroops"`
+	// ArchivedEntries are the ledger entries the restore operation would restore.
+	ArchivedEntries []string `json:"archived_entries,omitempty"`
 	// TransactionDataXDR is the base64 SorobanTransactionData for that
 	// operation. SoroProbe never submits it; it is reported so an operator can.
 	TransactionDataXDR string `json:"transaction_data_xdr,omitempty"`

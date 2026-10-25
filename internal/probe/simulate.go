@@ -491,6 +491,13 @@ func (p *Prober) buildSimulateResult(req SimulateRequest, resp protocol.Simulate
 			MinResourceFee:     resp.RestorePreamble.MinResourceFee,
 			TransactionDataXDR: resp.RestorePreamble.TransactionDataXDR,
 		}
+		var data xdr.SorobanTransactionData
+		if err := xdr.SafeUnmarshalBase64(resp.RestorePreamble.TransactionDataXDR, &data); err != nil {
+			return nil, fmt.Errorf("decode restore transaction data: %w", err)
+		}
+		for _, key := range data.Resources.Footprint.ReadWrite {
+			result.RestoreRequired.ArchivedEntries = append(result.RestoreRequired.ArchivedEntries, describeLedgerKey(key))
+		}
 	}
 
 	if resp.TransactionDataXDR != "" {

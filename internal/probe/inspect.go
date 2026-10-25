@@ -359,9 +359,10 @@ func (p *Prober) readInstanceEntry(entry protocol.LedgerEntryResult, result *Ins
 	if instance.Storage != nil {
 		storage, err := p.decodeStorage(instance.Storage)
 		if err != nil {
-			return nil, err
+			result.InstanceStorage = map[string]any{"error": err.Error()}
+		} else {
+			result.InstanceStorage = storage
 		}
-		result.InstanceStorage = storage
 	}
 	return wasmHash, nil
 }
