@@ -55,6 +55,12 @@ type Options struct {
 	Logger *slog.Logger
 	// CORSOrigins is the exact-origin allow-list. Empty disables CORS.
 	CORSOrigins []string
+	// APIToken, when non-empty, requires "Authorization: Bearer <token>" on
+	// every /v1 route. /healthz stays open, so a liveness probe needs no
+	// credential. Empty keeps the API unauthenticated, exactly as before.
+	// The token must meet config.MinAPITokenLength; Config.Validate enforces
+	// that at startup.
+	APIToken string
 	// Timeout bounds a single request. Defaults to 60s.
 	Timeout time.Duration
 	// NetworkPassphrase is the network /readyz expects the RPC endpoint to
@@ -102,10 +108,15 @@ func New(opts Options) *Server {
 		r.Use(cors(opts.CORSOrigins))
 	}
 
+	// /healthz stays outside the authenticated /v1 subtree on purpose: a
+	// liveness probe should not need a credential to prove the process is up.
 	r.Get("/healthz", s.handleLiveness)
 	r.Get("/openapi.json", s.handleOpenAPI)
 	r.Get("/readyz", s.handleReadiness)
 	r.Route("/v1", func(r chi.Router) {
+		if opts.APIToken != "" {
+			r.Use(requireToken(opts.APIToken))
+		}
 		// Answers reflect live on-chain state, so they must not be replayed
 		// from a shared or intermediary cache.
 		r.Use(noStore)

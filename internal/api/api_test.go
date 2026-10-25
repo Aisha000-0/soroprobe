@@ -755,3 +755,156 @@ func TestLivenessStillIgnoresReadiness(t *testing.T) {
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "ok", body["status"])
 }
+
+// testToken is long enough to satisfy config.MinAPITokenLength.
+const testToken = "0123456789abcdef"
+
+// newServerWithToken builds a handler that requires bearer auth on /v1.
+func newServerWithToken(t *testing.T, token string) http.Handler {
+	t.Helper()
+
+	p, err := probe.New(probe.Options{
+		Client:        stellartest.NewFake(t),
+		SourceAccount: stellartest.SourceAccount,
+	})
+	require.NoError(t, err)
+
+	return api.New(api.Options{Prober: p, APIToken: token}).Handler()
+}
+
+// doAuth issues a request carrying the given Authorization header value. An
+// empty header sends no Authorization header at all.
+func doAuth(t *testing.T, h http.Handler, method, target, header string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(method, target, strings.NewReader(""))
+	if header != "" {
+		req.Header.Set("Authorization", header)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestAuthMissingTokenIsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "")
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+	// WWW-Authenticate tells the client how to authenticate, per RFC 7235.
+	assert.Equal(t, `Bearer realm="soroprobe"`, rec.Header().Get("WWW-Authenticate"))
+	assert.Contains(t, rec.Body.String(), "missing bearer token")
+}
+
+func TestAuthWrongTokenIsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	for _, header := range []string{
+		"Bearer " + testToken + "x",
+		"Bearer not-the-token-at-all",
+		"Bearer " + testToken[:len(testToken)-1],
+	} {
+		rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, header)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "header was: %s", header)
+		assert.Contains(t, rec.Body.String(), "invalid bearer token")
+	}
+}
+
+func TestAuthMalformedAuthorizationHeaderIsUnauthorized(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	for _, header := range []string{
+		"Basic " + testToken,
+		"Bearer",
+		"Bearer    ",
+		testToken, // the bare token, without the scheme
+	} {
+		rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, header)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "header was: %q", header)
+	}
+}
+
+func TestAuthCorrectTokenIsAccepted(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "Bearer "+testToken)
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/simulate", strings.NewReader(
+		`{"contract_id":"`+stellartest.SACContract+`","function":"decimals"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestAuthSchemeIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	// RFC 7235 treats the auth scheme as case-insensitive, so "bearer" must
+	// work exactly like "Bearer".
+	h := newServerWithToken(t, testToken)
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "bearer "+testToken)
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestHealthzNeedsNoTokenWhenAuthIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	// A liveness probe should not need a credential to prove the process is
+	// up, and it must not start failing just because the token rotated.
+	h := newServerWithToken(t, testToken)
+
+	var body map[string]string
+	rec := do(t, h, http.MethodGet, "/healthz", "", &body)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, "ok", body["status"])
+}
+
+func TestAuthAppliesToEveryV1Route(t *testing.T) {
+	t.Parallel()
+
+	h := newServerWithToken(t, testToken)
+
+	routes := []struct {
+		method string
+		target string
+	}{
+		{http.MethodPost, "/v1/simulate"},
+		{http.MethodGet, "/v1/inspect/" + stellartest.SACContract},
+		{http.MethodGet, "/v1/check/" + stellartest.SACContract},
+		{http.MethodPost, "/v1/checks"},
+	}
+
+	for _, rt := range routes {
+		req := httptest.NewRequest(rt.method, rt.target, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		assert.Equal(t, http.StatusUnauthorized, rec.Code, "%s %s", rt.method, rt.target)
+	}
+}
+
+func TestAPIStaysOpenWhenNoTokenIsConfigured(t *testing.T) {
+	t.Parallel()
+
+	// Unset keeps the previous, unauthenticated behavior — no credential
+	// is required and none is rejected.
+	h := newServer(t, stellartest.NewFake(t))
+
+	rec := doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "")
+	assert.Equal(t, http.StatusOK, rec.Code)
+
+	rec = doAuth(t, h, http.MethodGet, "/v1/inspect/"+stellartest.SACContract, "Bearer "+testToken)
+	assert.Equal(t, http.StatusOK, rec.Code, "a stray Authorization header is ignored when auth is off")
+}

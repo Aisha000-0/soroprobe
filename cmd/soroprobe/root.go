@@ -64,7 +64,8 @@ well-formed transaction, and that account need not exist or hold a balance.`,
 	flags.String("rpc-url", "", fmt.Sprintf("Stellar RPC endpoint (env %s) (default %q)", config.EnvRPCURL, config.DefaultRPCURL))
 	flags.String("network-passphrase", "", fmt.Sprintf("network passphrase (env %s)", config.EnvNetworkPassphrase))
 	flags.String("source-account", "", fmt.Sprintf("public key used to build transactions for simulation (env %s)", config.EnvSourceAccount))
-	flags.String("log-level", "", fmt.Sprintf("debug, info, warn or error (env %s)", config.EnvLogLevel))
+	flags.String("log-level", "", fmt.Sprintf("debug, info, warn or error (env %s) (default %q)", config.EnvLogLevel, config.DefaultLogLevel))
+	flags.String("log-format", "", fmt.Sprintf("text or json (env %s) (default %q)", config.EnvLogFormat, config.DefaultLogFormat))
 	flags.Duration("timeout", 0, fmt.Sprintf("per-request RPC timeout (env %s)", config.EnvTimeout))
 	flags.Uint32("warn-ledgers", 0, "flag entries with fewer than this many ledgers of TTL left")
 	flags.Uint32("critical-ledgers", 0, "treat entries with fewer than this many ledgers of TTL left as critical")
@@ -103,6 +104,9 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	if flags.Changed("log-level") {
 		cfg.LogLevel, _ = flags.GetString("log-level")
 	}
+	if flags.Changed("log-format") {
+		cfg.LogFormat, _ = flags.GetString("log-format")
+	}
 	if flags.Changed("timeout") {
 		cfg.Timeout, _ = flags.GetDuration("timeout")
 	}
@@ -114,6 +118,11 @@ func (o *options) resolve(cmd *cobra.Command) error {
 	}
 	if flags.Changed("sorovault-url") {
 		cfg.SoroVaultURL, _ = flags.GetString("sorovault-url")
+	}
+	// --api-token is declared on serve, but resolved here so that a token
+	// too short to be safe is rejected by Validate before the server starts.
+	if flags.Changed("api-token") {
+		cfg.APIToken, _ = flags.GetString("api-token")
 	}
 	if flags.Changed("base-fee") {
 		cfg.BaseFee, _ = flags.GetInt64("base-fee")

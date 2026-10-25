@@ -1,10 +1,13 @@
 package config_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +79,7 @@ func TestLoadFromFile(t *testing.T) {
 		"network_passphrase": "Custom Network",
 		"http_addr": ":9999",
 		"log_level": "debug",
+		"log_format": "json",
 		"timeout": "5s",
 		"warn_ledgers": 100,
 		"critical_ledgers": 10,
@@ -89,12 +93,24 @@ func TestLoadFromFile(t *testing.T) {
 	assert.Equal(t, "Custom Network", cfg.NetworkPassphrase)
 	assert.Equal(t, ":9999", cfg.HTTPAddr)
 	assert.Equal(t, "debug", cfg.LogLevel)
+	assert.Equal(t, "json", cfg.LogFormat)
 	assert.Equal(t, 5*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 100, cfg.WarnLedgers)
 	assert.EqualValues(t, 10, cfg.CriticalLedgers)
 	assert.Equal(t, "http://vault.internal:8080", cfg.SoroVaultURL)
 	// Unset keys keep their defaults.
 	assert.Equal(t, config.DefaultSourceAccount, cfg.SourceAccount)
+}
+
+func TestLogFileCannotSetTheAPIToken(t *testing.T) {
+	// The token is a secret, so the config file cannot carry one: an
+	// "api_token" key is ignored rather than honored, and the operator is
+	// pointed at the environment instead.
+	path := writeConfig(t, `{"api_token": "file-issued-token-abcdef"}`)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Empty(t, cfg.APIToken)
 }
 
 func TestLoadFileFoundViaEnvVar(t *testing.T) {
@@ -124,6 +140,8 @@ func TestEnvVarsAreRead(t *testing.T) {
 	t.Setenv(config.EnvHTTPAddr, ":7000")
 	t.Setenv(config.EnvCORSOrigins, "https://dashboard.example, https://admin.example")
 	t.Setenv(config.EnvLogLevel, "warn")
+	t.Setenv(config.EnvLogFormat, "json")
+	t.Setenv(config.EnvAPIToken, "0123456789abcdef")
 	t.Setenv(config.EnvTimeout, "90s")
 	t.Setenv(config.EnvWarnLedgers, "500")
 	t.Setenv(config.EnvCriticalLedgers, "50")
@@ -137,6 +155,8 @@ func TestEnvVarsAreRead(t *testing.T) {
 	assert.Equal(t, ":7000", cfg.HTTPAddr)
 	assert.Equal(t, []string{"https://dashboard.example", "https://admin.example"}, cfg.CORSOrigins)
 	assert.Equal(t, "warn", cfg.LogLevel)
+	assert.Equal(t, "json", cfg.LogFormat)
+	assert.Equal(t, "0123456789abcdef", cfg.APIToken)
 	assert.Equal(t, 90*time.Second, cfg.Timeout)
 	assert.EqualValues(t, 500, cfg.WarnLedgers)
 	assert.EqualValues(t, 50, cfg.CriticalLedgers)
@@ -207,6 +227,14 @@ func TestValidate(t *testing.T) {
 		{"negative timeout", func(c *config.Config) { c.Timeout = -time.Second }, "timeout must be positive"},
 		{"critical above warn", func(c *config.Config) { c.WarnLedgers = 10; c.CriticalLedgers = 100 }, "must not exceed"},
 		{"unknown log level", func(c *config.Config) { c.LogLevel = "chatty" }, "unknown log level"},
+		{"unknown log format", func(c *config.Config) { c.LogFormat = "xml" }, "unknown log format"},
+		{
+			// A token short enough to guess is no better than none, so the
+			// server must refuse to start with one.
+			"short api token",
+			func(c *config.Config) { c.APIToken = "0123456789abcdef"[:config.MinAPITokenLength-1] },
+			"use at least",
+		},
 		{"sorovault url without scheme", func(c *config.Config) { c.SoroVaultURL = "localhost:8080" }, "sorovault url"},
 	}
 
@@ -220,6 +248,15 @@ func TestValidate(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestValidateAcceptsALongEnoughAPIToken(t *testing.T) {
+	cfg := config.Default()
+	cfg.APIToken = strings.Repeat("a", config.MinAPITokenLength)
+	assert.NoError(t, cfg.Validate())
+
+	cfg.APIToken = ""
+	assert.NoError(t, cfg.Validate(), "no token configured keeps the API open, which is valid")
 }
 
 func TestValidateAllowsEqualThresholds(t *testing.T) {
@@ -286,4 +323,88 @@ func TestValidateRejectsNegativeInspectCacheTTL(t *testing.T) {
 	err := cfg.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "inspect cache ttl")
+}
+
+func TestParseLogFormat(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"text", "text"},
+		{"TEXT", "text"},
+		{"json", "json"},
+		{" JSON ", "json"},
+		{"", "text"},
+	}
+
+	for _, tt := range tests {
+		t.Run("["+tt.in+"]", func(t *testing.T) {
+			got, err := config.ParseLogFormat(tt.in)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	// An unknown format is rejected, and the error names the accepted values
+	// so the operator does not have to go looking for them.
+	_, err := config.ParseLogFormat("yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "text")
+	assert.Contains(t, err.Error(), "json")
+}
+
+func TestLoggerJSONEmitsParseableLines(t *testing.T) {
+	// The point of JSON mode is that a CI log aggregator can filter on
+	// fields — contract, status — instead of regex-parsing the text handler's
+	// output, so every line has to decode as a JSON object on its own.
+	cfg := config.Default()
+	cfg.LogFormat = "json"
+
+	var buf bytes.Buffer
+	log := cfg.Logger(&buf)
+	log.Info("simulated", "contract", "CDLZ", "status", "success")
+	log.Error("rpc unreachable", "url", "https://rpc.example.com")
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	require.Len(t, lines, 2, "one object per line, no wrapping")
+
+	var first, second map[string]any
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &first), "line was: %s", lines[0])
+	require.NoError(t, json.Unmarshal([]byte(lines[1]), &second), "line was: %s", lines[1])
+
+	assert.Equal(t, "simulated", first["msg"])
+	assert.Equal(t, "CDLZ", first["contract"])
+	assert.Equal(t, "success", first["status"])
+	assert.Equal(t, "INFO", first["level"])
+	assert.NotEmpty(t, first["time"])
+
+	assert.Equal(t, "rpc unreachable", second["msg"])
+	assert.Equal(t, "ERROR", second["level"])
+}
+
+func TestLoggerDefaultsToText(t *testing.T) {
+	cfg := config.Default()
+
+	var buf bytes.Buffer
+	log := cfg.Logger(&buf)
+	log.Info("inspected", "contract", "CDLZ")
+
+	// The text handler's key=value shape, not a JSON object.
+	assert.Contains(t, buf.String(), "msg=inspected")
+	assert.Contains(t, buf.String(), "contract=CDLZ")
+	assert.NotContains(t, buf.String(), `"msg"`)
+}
+
+func TestLoggerHonoursLogLevel(t *testing.T) {
+	cfg := config.Default()
+	cfg.LogFormat = "json"
+	cfg.LogLevel = "error"
+
+	var buf bytes.Buffer
+	log := cfg.Logger(&buf)
+	log.Info("suppressed")
+	log.Error("kept")
+
+	assert.NotContains(t, buf.String(), "suppressed")
+	assert.Contains(t, buf.String(), "kept")
 }
