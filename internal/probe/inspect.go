@@ -99,7 +99,30 @@ type InspectResult struct {
 
 // Inspect reads a contract's instance, code and any named data entries, and
 // reports how close each is to expiration.
+//
+// When the Prober has an inspect cache, a repeated request within its window is
+// served from it. A cached report is still honest: LatestLedger records the
+// ledger it was computed at, and simulations are never cached.
 func (p *Prober) Inspect(ctx context.Context, req InspectRequest) (*InspectResult, error) {
+	if p.inspectCache == nil {
+		return p.inspectUncached(ctx, req)
+	}
+
+	key := inspectCacheKey(req)
+	if result, ok := p.inspectCache.get(key); ok {
+		return result, nil
+	}
+
+	result, err := p.inspectUncached(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	p.inspectCache.put(key, result)
+	return result, nil
+}
+
+// inspectUncached is Inspect without the cache.
+func (p *Prober) inspectUncached(ctx context.Context, req InspectRequest) (*InspectResult, error) {
 	contract, err := stellar.ParseContractID(req.ContractID)
 	if err != nil {
 		return nil, err

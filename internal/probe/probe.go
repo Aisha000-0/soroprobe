@@ -9,6 +9,7 @@ package probe
 import (
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/soroworks/soroprobe/internal/abi"
 	"github.com/soroworks/soroprobe/internal/health"
@@ -24,9 +25,10 @@ type Prober struct {
 	thresholds health.Thresholds
 	log        *slog.Logger
 
-	abi     abi.Source
-	network string
-	baseFee int64
+	abi          abi.Source
+	network      string
+	baseFee      int64
+	inspectCache *inspectCache
 }
 
 // Options configures a Prober.
@@ -50,6 +52,10 @@ type Options struct {
 	// Network is the label ABI lookups are filed under ("testnet",
 	// "public", ...). Only read when ABI is set.
 	Network string
+	// InspectCacheTTL enables a bounded cache for Inspect results. Zero, the
+	// default, disables it. A few seconds suits dashboards polling the same
+	// contracts: TTLs change at most once per ledger.
+	InspectCacheTTL time.Duration
 
 	// BaseFee is the base fee per operation in stroops used to estimate total fees.
 	// Defaults to DefaultBaseFee (100 stroops).
@@ -73,19 +79,24 @@ func New(opts Options) (*Prober, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.New(slog.DiscardHandler)
 	}
+	var cache *inspectCache
+	if opts.InspectCacheTTL > 0 {
+		cache = newInspectCache(opts.InspectCacheTTL, inspectCacheMaxEntries)
+	}
 	baseFee := opts.BaseFee
 	if baseFee <= 0 {
 		baseFee = DefaultBaseFee
 	}
 	return &Prober{
-		client:     opts.Client,
-		codec:      opts.Codec,
-		source:     opts.SourceAccount,
-		thresholds: opts.Thresholds,
-		log:        opts.Logger,
-		abi:        opts.ABI,
-		network:    opts.Network,
-		baseFee:    baseFee,
+		client:       opts.Client,
+		codec:        opts.Codec,
+		source:       opts.SourceAccount,
+		thresholds:   opts.Thresholds,
+		log:          opts.Logger,
+		abi:          opts.ABI,
+		network:      opts.Network,
+		inspectCache: cache,
+		baseFee:      baseFee,
 	}, nil
 }
 

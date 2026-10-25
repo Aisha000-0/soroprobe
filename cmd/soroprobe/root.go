@@ -175,10 +175,11 @@ func newLiveProber(cfg config.Config) (*probe.Prober, func(), error) {
 			Warn:     cfg.WarnLedgers,
 			Critical: cfg.CriticalLedgers,
 		},
-		Logger:  log,
-		ABI:     source,
-		Network: abi.NetworkName(cfg.NetworkPassphrase),
-		BaseFee: cfg.BaseFee,
+		Logger:          log,
+		ABI:             source,
+		Network:         abi.NetworkName(cfg.NetworkPassphrase),
+		BaseFee:         cfg.BaseFee,
+		InspectCacheTTL: cfg.InspectCacheTTL,
 	})
 	if err != nil {
 		_ = client.Close()

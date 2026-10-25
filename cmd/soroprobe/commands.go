@@ -694,6 +694,7 @@ func inGitHubActions() bool {
 
 func newServeCmd(opts *options) *cobra.Command {
 	var addr string
+	var inspectCacheTTL time.Duration
 	var apiToken string
 
 	cmd := &cobra.Command{
@@ -710,6 +711,9 @@ token shorter than 16 characters is rejected at startup.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if addr != "" {
 				opts.cfg.HTTPAddr = addr
+			}
+			if cmd.Flags().Changed("inspect-cache-ttl") {
+				opts.cfg.InspectCacheTTL = inspectCacheTTL
 			}
 
 			p, cleanup, err := opts.prober()
@@ -732,6 +736,8 @@ token shorter than 16 characters is rejected at startup.`,
 	}
 
 	cmd.Flags().StringVar(&addr, "addr", "", "listen address, overriding HTTP_ADDR")
+	cmd.Flags().DurationVar(&inspectCacheTTL, "inspect-cache-ttl", 0,
+		"cache inspect results for this long; 0 disables (a few seconds suits dashboards, because TTLs change once per ledger)")
 	cmd.Flags().StringVar(&apiToken, "api-token", "",
 		fmt.Sprintf("require this bearer token on /v1 routes, overriding %s", config.EnvAPIToken))
 	return cmd

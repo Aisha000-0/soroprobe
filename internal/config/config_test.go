@@ -292,6 +292,39 @@ func TestParseLogLevel(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestLoadInspectCacheTTL(t *testing.T) {
+	path := writeConfig(t, `{"inspect_cache_ttl":"5s"}`)
+
+	cfg, err := config.Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 5*time.Second, cfg.InspectCacheTTL)
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestEnvInspectCacheTTL(t *testing.T) {
+	t.Setenv(config.EnvInspectCacheTTL, "3s")
+	t.Chdir(t.TempDir())
+
+	cfg, err := config.Load("")
+	require.NoError(t, err)
+	assert.Equal(t, 3*time.Second, cfg.InspectCacheTTL)
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestLoadRejectsMalformedInspectCacheTTL(t *testing.T) {
+	_, err := config.Load(writeConfig(t, `{"inspect_cache_ttl":"soon"}`))
+	require.Error(t, err)
+}
+
+func TestValidateRejectsNegativeInspectCacheTTL(t *testing.T) {
+	cfg := config.Default()
+	cfg.InspectCacheTTL = -time.Second
+
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inspect cache ttl")
+}
+
 func TestParseLogFormat(t *testing.T) {
 	tests := []struct {
 		in   string
